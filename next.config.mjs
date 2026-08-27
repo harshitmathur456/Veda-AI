@@ -1,8 +1,8 @@
-/** @type {import('next').NextMode} */
+/** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  transpilePackages: ['lucide-react'],
   webpack: (config) => {
-    // Canvas & worker support for pdfjs-dist
     config.resolve.alias.canvas = false;
     return config;
   },
