@@ -1,91 +1,110 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+/**
+ * Client-side pipeline orchestrator.
+ * Sends uploaded images to the server-side API route (/api/process-assessment)
+ * and streams progress updates back via NDJSON.
+ *
+ * The Gemini SDK runs ONLY on the server — never in the browser.
+ */
+
 import { MOCK_QUESTIONS, MOCK_ANSWERS, UNANSWERED_QUESTIONS, MOCK_SUMMARY } from './mockData';
 
-const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
-
-// Initialize Google Generative AI SDK if API key present
-const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
-
 /**
- * Process Question Paper & Answer Sheet using Gemini Multimodal Vision API
- * @param {Array<{page: number, base64: string}>} qpImages 
- * @param {Array<{page: number, base64: string}>} asImages 
- * @param {function} onProgressCallback 
+ * Process Question Paper & Answer Sheet via the server-side Gemini pipeline.
+ * @param {Array<{page: number, base64: string}>} qpImages
+ * @param {Array<{page: number, base64: string}>} asImages
+ * @param {function} onProgressCallback
  */
 export async function processAssessmentWithGemini(qpImages, asImages, onProgressCallback = () => {}) {
-  try {
-    // Stage 1: Extract Questions
-    onProgressCallback({ stage: 1, text: "Extracting questions from Question Paper..." });
-    await new Promise(r => setTimeout(r, 1000));
+  console.log('\n╔══════════════════════════════════════════════════╗');
+  console.log('║  CLIENT — Sending to /api/process-assessment     ║');
+  console.log('╚══════════════════════════════════════════════════╝');
+  console.log(`QP images: ${qpImages?.length || 0}, AS images: ${asImages?.length || 0}`);
 
-    let questions = [];
-    let answers = [];
-
-    if (genAI && qpImages && qpImages.length > 0) {
-      try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const qpPrompt = `You are an expert AI exam evaluator. Analyze the attached Question Paper image(s).
-Extract every question in printed order. Return JSON array matching:
-[
-  {
-    "id": "q1",
-    "qNo": "1",
-    "subPart": null,
-    "text": "Full question text",
-    "maxMarks": 5,
-    "page": 1,
-    "bbox": [10, 10, 20, 90]
+  if (!qpImages?.length || !asImages?.length) {
+    console.error('[Client] No images to process');
+    onProgressCallback({ stage: 4, text: 'No images — using sample data' });
+    return { questions: MOCK_QUESTIONS, answers: MOCK_ANSWERS, unanswered: UNANSWERED_QUESTIONS, summary: MOCK_SUMMARY };
   }
-]`;
 
-        const imageParts = qpImages.map(img => ({
-          inlineData: {
-            data: img.base64.replace(/^data:image\/(png|jpeg|jpg);base64,/, ''),
-            mimeType: "image/png"
+  onProgressCallback({ stage: 1, text: 'Sending files to AI engine...' });
+
+  try {
+    const response = await fetch('/api/process-assessment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ qpImages, asImages }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API returned ${response.status}: ${errText}`);
+    }
+
+    // Stream NDJSON progress updates
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+
+          if (msg.type === 'progress') {
+            console.log(`[Client] Stage ${msg.stage}: ${msg.text}`);
+            onProgressCallback({ stage: msg.stage, text: msg.text });
+          } else if (msg.type === 'result') {
+            console.log('[Client] ✅ Received final result');
+            console.log(`  Questions: ${msg.data?.questions?.length}`);
+            console.log(`  Answers: ${msg.data?.answers?.length}`);
+            console.log(`  Score: ${msg.data?.summary?.totalMarksObtained}/${msg.data?.summary?.totalMaxMarks}`);
+            finalResult = msg.data;
+          } else if (msg.type === 'error') {
+            console.error('[Client] ❌ Server error:', msg.error);
+            throw new Error(msg.error);
           }
-        }));
-
-        const result = await model.generateContent([qpPrompt, ...imageParts]);
-        const responseText = result.response.text();
-        const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-          questions = JSON.parse(jsonMatch[0]);
+        } catch (parseErr) {
+          if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage')) {
+            throw parseErr; // Re-throw pipeline errors
+          }
+          console.warn('[Client] Failed to parse NDJSON line:', line.substring(0, 100));
         }
-      } catch (err) {
-        console.warn("Gemini QP Vision extraction warning, fallback to default mock:", err);
       }
     }
 
-    if (!questions || questions.length === 0) {
-      questions = MOCK_QUESTIONS;
+    if (!finalResult) {
+      throw new Error('Pipeline completed but no result received');
     }
 
-    // Stage 2: Extract Handwritten Answers
-    onProgressCallback({ stage: 2, text: "Extracting handwritten answer regions..." });
-    await new Promise(r => setTimeout(r, 1000));
+    return finalResult;
 
-    // Stage 3: Semantic Mapping & Grading
-    onProgressCallback({ stage: 3, text: "Mapping answers to questions & grading..." });
-    await new Promise(r => setTimeout(r, 1200));
+  } catch (err) {
+    console.error('[Client] ❌ Pipeline failed:', err.message);
+    console.error('[Client] Full error:', err);
 
-    answers = MOCK_ANSWERS;
+    // Show the actual error to the user instead of silently falling back
+    onProgressCallback({
+      stage: 0,
+      text: `Error: ${err.message}. Showing sample data instead.`,
+    });
 
-    onProgressCallback({ stage: 4, text: "Finalizing assessment report..." });
-    await new Promise(r => setTimeout(r, 500));
+    // Wait a moment so the user can see the error
+    await new Promise(r => setTimeout(r, 2000));
 
-    return {
-      questions,
-      answers,
-      unanswered: UNANSWERED_QUESTIONS,
-      summary: MOCK_SUMMARY
-    };
-  } catch (error) {
-    console.error("Error in assessment processing:", error);
     return {
       questions: MOCK_QUESTIONS,
       answers: MOCK_ANSWERS,
       unanswered: UNANSWERED_QUESTIONS,
-      summary: MOCK_SUMMARY
+      summary: MOCK_SUMMARY,
     };
   }
 }

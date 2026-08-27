@@ -52,16 +52,41 @@ export default function ExamsPage() {
   const handleStartMapping = async () => {
     if (!qpFile || !asFile) return;
 
+    console.log('\n┌──────────────────────────────────────────────────┐');
+    console.log('│         EXAMS PAGE — START MAPPING                │');
+    console.log('└──────────────────────────────────────────────────┘');
+    console.log(`[ExamsPage] QP File: "${qpFile.name}" (${qpFile.type}, ${(qpFile.size / 1024).toFixed(1)} KB)`);
+    console.log(`[ExamsPage] AS File: "${asFile.name}" (${asFile.type}, ${(asFile.size / 1024).toFixed(1)} KB)`);
+
     setViewStep('processing');
 
     try {
+      // Step 1: Convert files to images
       setProcessingStatus({ stage: 1, text: 'Rasterizing PDF / Image pages...' });
+      console.log('[ExamsPage] Converting QP file to images...');
       const qpImages = await convertFileToImages(qpFile);
-      const asImages = await convertFileToImages(asFile);
+      console.log(`[ExamsPage] QP conversion done: ${qpImages.length} page(s)`);
 
+      console.log('[ExamsPage] Converting AS file to images...');
+      const asImages = await convertFileToImages(asFile);
+      console.log(`[ExamsPage] AS conversion done: ${asImages.length} page(s)`);
+
+      if (!qpImages.length || !asImages.length) {
+        console.error('[ExamsPage] ❌ File conversion failed — no images produced');
+      }
+
+      // Step 2: Run Gemini pipeline
+      console.log('[ExamsPage] Starting Gemini pipeline...');
       const result = await processAssessmentWithGemini(qpImages, asImages, (status) => {
+        console.log(`[ExamsPage] Pipeline progress: Stage ${status.stage} — ${status.text}`);
         setProcessingStatus(status);
       });
+
+      console.log('[ExamsPage] Pipeline complete. Result summary:');
+      console.log(`  Questions: ${result.questions?.length || 0}`);
+      console.log(`  Answers: ${result.answers?.length || 0}`);
+      console.log(`  Unanswered: ${result.unanswered?.length || 0}`);
+      console.log(`  Score: ${result.summary?.totalMarksObtained}/${result.summary?.totalMaxMarks}`);
 
       setAssessmentData({
         ...result,
@@ -70,7 +95,7 @@ export default function ExamsPage() {
 
       setViewStep('results');
     } catch (error) {
-      console.error("Pipeline error:", error);
+      console.error('[ExamsPage] ❌ Pipeline error:', error);
       setAssessmentData({
         questions: MOCK_QUESTIONS,
         answers: MOCK_ANSWERS,

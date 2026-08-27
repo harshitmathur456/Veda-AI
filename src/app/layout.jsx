@@ -11,8 +11,8 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <body className={`${inter.className} bg-slate-100 text-slate-900 antialiased selection:bg-brand-500 selection:text-white`}>
+    <html lang="en" suppressHydrationWarning>
+      <body suppressHydrationWarning className={`${inter.className} bg-slate-100 text-slate-900 antialiased selection:bg-brand-500 selection:text-white`}>
         {children}
       </body>
     </html>

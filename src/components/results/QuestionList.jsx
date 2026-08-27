@@ -126,14 +126,26 @@ export default function QuestionList({
                 </div>
               </div>
 
-              {/* Inline AI Feedback Section matching Screenshot 2 */}
+              {/* Inline AI Feedback & Rationale Section */}
               {isExpanded && ans && (
                 <div className="mt-3 pt-3 border-t border-slate-100">
-                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/60 text-xs">
-                    <p className="font-extrabold text-slate-900 mb-1">AI Feedback</p>
-                    <p className="text-slate-600 leading-relaxed font-medium">
-                      {ans.feedback}
-                    </p>
+                  <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 text-xs space-y-2">
+                    {ans.rationale && (
+                      <div className="bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-xl">
+                        <p className="text-[11px] font-black text-amber-900 uppercase tracking-wider mb-0.5">
+                          Grading Rationale ({ans.marks}/{ans.maxMarks} Marks)
+                        </p>
+                        <p className="text-slate-800 font-semibold leading-relaxed">
+                          {ans.rationale}
+                        </p>
+                      </div>
+                    )}
+                    <div>
+                      <p className="font-extrabold text-slate-900 mb-0.5">AI Teacher Feedback</p>
+                      <p className="text-slate-600 leading-relaxed font-medium">
+                        {ans.feedback}
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}

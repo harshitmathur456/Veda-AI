@@ -146,6 +146,7 @@ export const MOCK_ANSWERS = [
     marks: 2,
     maxMarks: 2,
     verdict: "correct",
+    rationale: "Awarded 2/2 for accurate chemical equation and complete definition of photosynthesis.",
     feedback: "Accurate definition and balanced chemical equation."
   },
   {
@@ -159,6 +160,7 @@ export const MOCK_ANSWERS = [
     marks: 2,
     maxMarks: 2,
     verdict: "correct",
+    rationale: "Awarded 2/2 for correctly identifying chloroplasts and outlining both light and dark reactions.",
     feedback: "Excellent work! You correctly identified the chloroplast as the organelle responsible for photosynthesis. Keep it up!"
   },
   {
@@ -172,6 +174,7 @@ export const MOCK_ANSWERS = [
     marks: 2,
     maxMarks: 2,
     verdict: "correct",
+    rationale: "Awarded 2/2 for naming chlorophyll and stating its role in sunlight absorption.",
     feedback: "Well answered!"
   },
   {
@@ -185,6 +188,7 @@ export const MOCK_ANSWERS = [
     marks: 0,
     maxMarks: 2,
     verdict: "incorrect",
+    rationale: "Awarded 0/2 because cardiac blood flow valves and chamber sequence were entirely missing or wrong.",
     feedback: "Incorrect sequence of valves and chambers in cardiac blood flow."
   },
   {
