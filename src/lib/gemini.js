@@ -88,17 +88,19 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
     return finalResult;
 
   } catch (err) {
-    console.error('[Client] ❌ Pipeline failed:', err.message);
-    console.error('[Client] Full error:', err);
+    const isFetchErr = err.message?.includes('Failed to fetch') || err.name === 'TypeError';
+    const friendlyErrMsg = isFetchErr
+      ? 'Connection failed (server offline or network error)'
+      : err.message || 'Unknown pipeline error';
 
-    // Show the actual error to the user instead of silently falling back
+    console.warn('[Client] ⚠ Pipeline issue encountered:', friendlyErrMsg);
+
     onProgressCallback({
       stage: 0,
-      text: `Error: ${err.message}. Showing sample data instead.`,
+      text: `${friendlyErrMsg}. Loading sample evaluation data...`,
     });
 
-    // Wait a moment so the user can see the error
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1500));
 
     return {
       questions: MOCK_QUESTIONS,

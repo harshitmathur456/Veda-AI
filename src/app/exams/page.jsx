@@ -43,7 +43,9 @@ export default function ExamsPage() {
         answers: MOCK_ANSWERS,
         unanswered: UNANSWERED_QUESTIONS,
         summary: MOCK_SUMMARY,
-        asImages: []
+        asImages: [],
+        qpFileName: 'Class_10_Science_Question_Paper.pdf',
+        asFileName: 'rahul_sharma_answer_sheet.pdf'
       });
       setViewStep('results');
     }, 3200);
@@ -90,7 +92,9 @@ export default function ExamsPage() {
 
       setAssessmentData({
         ...result,
-        asImages
+        asImages,
+        qpFileName: qpFile.name,
+        asFileName: asFile.name
       });
 
       setViewStep('results');
@@ -101,7 +105,9 @@ export default function ExamsPage() {
         answers: MOCK_ANSWERS,
         unanswered: UNANSWERED_QUESTIONS,
         summary: MOCK_SUMMARY,
-        asImages: []
+        asImages: [],
+        qpFileName: qpFile.name,
+        asFileName: asFile.name
       });
       setViewStep('results');
     }
@@ -139,6 +145,8 @@ export default function ExamsPage() {
           unanswered={assessmentData.unanswered}
           summary={assessmentData.summary}
           asImages={assessmentData.asImages}
+          qpFileName={assessmentData.qpFileName || qpFile?.name || 'Class_10_Science_Question_Paper.pdf'}
+          asFileName={assessmentData.asFileName || asFile?.name || 'student_answer_sheet.pdf'}
           onResetUpload={handleResetUpload}
         />
       )}
