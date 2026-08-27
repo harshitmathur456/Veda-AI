@@ -198,39 +198,34 @@ export default function ResultsView({
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-          <button
-            onClick={() => performSave(studentName, studentNameSource)}
-            disabled={isSaving}
-            className={`px-3.5 py-1.5 text-xs font-extrabold rounded-xl transition-all flex items-center gap-1.5 ${
-              saveStatus === 'saved'
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                : saveStatus === 'error'
-                ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
-                : 'bg-slate-900 hover:bg-slate-800 text-white shadow-sm'
-            }`}
-          >
-            {isSaving ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Saving...</span>
-              </>
-            ) : saveStatus === 'saved' ? (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Saved to Supabase</span>
-              </>
-            ) : saveStatus === 'error' ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
-                <span>Retry Save</span>
-              </>
-            ) : (
-              <>
-                <Save className="w-3.5 h-3.5" />
-                <span>Save Result</span>
-              </>
-            )}
-          </button>
+          {saveStatus !== 'saved' && (
+            <button
+              onClick={() => performSave(studentName, studentNameSource)}
+              disabled={isSaving}
+              className={`px-3.5 py-1.5 text-xs font-extrabold rounded-xl transition-all flex items-center gap-1.5 ${
+                saveStatus === 'error'
+                  ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                  : 'bg-slate-900 hover:bg-slate-800 text-white shadow-sm'
+              }`}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Saving...</span>
+                </>
+              ) : saveStatus === 'error' ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Retry Save</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Result</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
