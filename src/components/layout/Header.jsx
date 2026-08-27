@@ -1,14 +1,36 @@
 'use client';
 
 import React from 'react';
+import { usePathname } from 'next/navigation';
 import { ArrowLeft, HelpCircle, Bell, Sparkles, ChevronDown, ClipboardList } from 'lucide-react';
 
 export default function Header({ currentStep = 'upload', onBack = () => {} }) {
+  const pathname = usePathname();
+
+  const getBreadcrumbTitle = () => {
+    switch (pathname) {
+      case '/home':
+        return 'Home';
+      case '/classroom':
+        return 'My Classroom';
+      case '/assignments':
+        return 'Assignments';
+      case '/library':
+        return 'My Library';
+      case '/exams':
+      case '/':
+      default:
+        return 'Exams';
+    }
+  };
+
+  const isExamsPage = pathname === '/exams' || pathname === '/';
+
   return (
     <header className="h-16 bg-white border-b border-slate-200/80 px-6 flex items-center justify-between sticky top-0 z-30 shadow-2xs">
       {/* Left: Navigation & Breadcrumbs */}
       <div className="flex items-center gap-3">
-        {currentStep !== 'upload' && (
+        {isExamsPage && currentStep !== 'upload' && (
           <button 
             onClick={onBack}
             className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
@@ -19,8 +41,8 @@ export default function Header({ currentStep = 'upload', onBack = () => {} }) {
         )}
         <div className="flex items-center gap-2 text-sm font-medium">
           <ClipboardList className="w-4 h-4 text-slate-400" />
-          <span className="text-slate-600 font-medium text-xs sm:text-sm">Exams</span>
-          {currentStep === 'results' && (
+          <span className="text-slate-600 font-medium text-xs sm:text-sm">{getBreadcrumbTitle()}</span>
+          {isExamsPage && currentStep === 'results' && (
             <>
               <span className="text-slate-300">/</span>
               <span className="text-slate-900 font-semibold text-xs sm:text-sm">Question Paper & Answer Sheet Mapping</span>

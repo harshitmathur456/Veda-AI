@@ -1,40 +1,49 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { 
   LayoutGrid, 
-  NotebookPen, 
+  Edit3, 
   FileText, 
   ClipboardList, 
   Clock, 
   Settings, 
   Sparkles,
-  ChevronRight,
   ChevronsRight,
-  PanelLeftClose,
-  PieChart
+  PanelLeftClose
 } from 'lucide-react';
 
 export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
+  const pathname = usePathname();
+
   const navItems = [
-    { icon: LayoutGrid, label: 'Home', active: false },
-    { icon: NotebookPen, label: 'My Classroom', active: false },
-    { icon: FileText, label: 'Assignments', active: false },
-    { icon: ClipboardList, label: 'Exams', active: true },
-    { icon: Clock, label: 'My Library', active: false },
+    { icon: LayoutGrid, label: 'Home', route: '/home' },
+    { icon: Edit3, label: 'My Classroom', route: '/classroom' },
+    { icon: FileText, label: 'Assignments', route: '/assignments' },
+    { icon: ClipboardList, label: 'Exams', route: '/exams' },
+    { icon: Clock, label: 'My Library', route: '/library' },
   ];
+
+  const isRouteActive = (route) => {
+    if (route === '/exams') {
+      return pathname === '/exams' || pathname === '/';
+    }
+    return pathname === route;
+  };
 
   if (isCollapsed) {
     return (
-      <aside className="w-16 bg-white border-r border-slate-200/80 flex flex-col items-center justify-between py-4 z-20 shadow-2xs">
+      <aside className="w-16 bg-white border-r border-slate-200/80 flex flex-col items-center justify-between py-4 z-20 shadow-2xs h-screen sticky top-0">
         {/* Top Logo */}
         <div className="flex flex-col items-center gap-6">
-          <div className="w-9 h-9 rounded-xl bg-slate-900 text-white font-black text-lg flex items-center justify-center shadow-md">
+          <Link href="/exams" className="w-9 h-9 rounded-xl bg-slate-900 text-white font-black text-lg flex items-center justify-center shadow-md">
             v
-          </div>
+          </Link>
 
-          {/* Sparkle Button */}
-          <button className="w-10 h-10 rounded-full bg-slate-900 border-2 border-brand-500 flex items-center justify-center text-white shadow-sm hover:scale-105 transition-transform">
+          {/* AI Toolkit Sparkle Action Button */}
+          <button className="w-10 h-10 rounded-full bg-slate-900 border-2 border-brand-500 flex items-center justify-center text-white shadow-sm hover:scale-105 transition-transform" title="AI Teacher's Toolkit">
             <Sparkles className="w-5 h-5 text-brand-500 fill-brand-500" />
           </button>
 
@@ -42,18 +51,20 @@ export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
           <nav className="flex flex-col gap-5 text-slate-400">
             {navItems.map((item, idx) => {
               const Icon = item.icon;
+              const active = isRouteActive(item.route);
               return (
-                <button
+                <Link
                   key={idx}
+                  href={item.route}
                   className={`p-2 rounded-xl transition-all ${
-                    item.active
-                      ? 'bg-brand-500 text-white shadow-md shadow-brand-500/20'
+                    active
+                      ? 'bg-slate-900 text-white shadow-md'
                       : 'hover:text-slate-700 hover:bg-slate-100'
                   }`}
                   title={item.label}
                 >
                   <Icon className="w-5 h-5" />
-                </button>
+                </Link>
               );
             })}
           </nav>
@@ -80,19 +91,19 @@ export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
   }
 
   return (
-    <aside className="w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between p-4 z-20 shadow-2xs">
+    <aside className="w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between p-4 z-20 shadow-2xs h-screen sticky top-0">
       {/* Top Section */}
       <div>
         {/* Header & Logo */}
         <div className="flex items-center justify-between mb-6 px-2">
-          <div className="flex items-center gap-2.5">
+          <Link href="/exams" className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-slate-900 text-white font-black text-base flex items-center justify-center shadow-sm">
               v
             </div>
             <span className="font-extrabold text-xl tracking-tight text-slate-900">
               VedaAI
             </span>
-          </div>
+          </Link>
 
           <button
             onClick={onToggle}
@@ -103,7 +114,7 @@ export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
           </button>
         </div>
 
-        {/* AI Teacher's Toolkit Pill Button */}
+        {/* AI Teacher's Toolkit Action Button */}
         <div className="mb-6">
           <button className="w-full py-2.5 px-4 bg-slate-900 border-2 border-brand-500 rounded-full text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm hover:bg-slate-800 transition-all">
             <Sparkles className="w-4 h-4 text-brand-500 fill-brand-500" />
@@ -115,18 +126,20 @@ export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
         <nav className="space-y-1.5">
           {navItems.map((item, idx) => {
             const Icon = item.icon;
+            const active = isRouteActive(item.route);
             return (
-              <button
+              <Link
                 key={idx}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
-                  item.active
+                href={item.route}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all ${
+                  active
                     ? 'bg-slate-100 text-slate-900 font-bold'
-                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
+                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50 font-semibold'
                 }`}
               >
-                <Icon className={`w-4 h-4 ${item.active ? 'text-slate-900' : 'text-slate-400'}`} />
+                <Icon className={`w-4 h-4 ${active ? 'text-slate-900' : 'text-slate-400'}`} />
                 <span>{item.label}</span>
-              </button>
+              </Link>
             );
           })}
         </nav>
