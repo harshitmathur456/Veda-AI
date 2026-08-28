@@ -73,8 +73,8 @@ export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
         {/* Bottom Section */}
         <div className="flex flex-col items-center gap-4">
           {/* School Badge */}
-          <div className="w-8 h-8 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center font-bold text-xs shadow-2xs">
-            🎓
+          <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-2xs overflow-hidden" title="Delhi Public School, Bokaro Steel City">
+            <img src="/dps-logo.png" alt="DPS Logo" className="w-full h-full object-contain p-0.5" />
           </div>
 
           {/* Expand Toggle */}
@@ -154,8 +154,8 @@ export default function Sidebar({ isCollapsed = false, onToggle = () => {} }) {
 
         {/* School Footer Card */}
         <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/60 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs border border-emerald-200 flex-shrink-0">
-            🎓
+          <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center border border-slate-200 flex-shrink-0 shadow-2xs overflow-hidden">
+            <img src="/dps-logo.png" alt="DPS Logo" className="w-full h-full object-contain p-0.5" />
           </div>
           <div className="overflow-hidden">
             <p className="text-xs font-bold text-slate-900 truncate">Delhi Public School</p>

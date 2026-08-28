@@ -53,7 +53,7 @@ export default function GradingSummaryModal({ summary, questions, answers, unans
             </div>
             <div>
               <h2 className="text-xl font-extrabold text-white">AI Assessment Grading Summary</h2>
-              <p className="text-xs text-slate-400 font-medium">Student Performance Analysis • Class 10 Science</p>
+              <p className="text-xs text-slate-400 font-medium">Student Performance Analysis Summary</p>
             </div>
           </div>
 

@@ -26,8 +26,8 @@ export default function ResultsView({
   unanswered = [],
   summary = null,
   asImages = [],
-  qpFileName = 'Class_10_Science_Question_Paper.pdf',
-  asFileName = 'rahul_sharma_answer_sheet.pdf',
+  qpFileName = 'Sample_Question_Paper.pdf',
+  asFileName = 'Sample_Answer_Sheet.pdf',
   onResetUpload
 }) {
   const [selectedQuestionId, setSelectedQuestionId] = useState(questions[0]?.id || 'q1');

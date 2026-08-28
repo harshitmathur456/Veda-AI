@@ -15,6 +15,9 @@ export default function ExamsPage() {
   const [qpFile, setQpFile] = useState(null);
   const [asFile, setAsFile] = useState(null);
 
+  const [isSampleLoading, setIsSampleLoading] = useState(false);
+  const [sampleError, setSampleError] = useState(null);
+
   const [processingStatus, setProcessingStatus] = useState({ stage: 1, text: 'Starting pipeline...' });
 
   const [assessmentData, setAssessmentData] = useState({
@@ -25,40 +28,14 @@ export default function ExamsPage() {
     asImages: []
   });
 
-  const handleLoadSampleData = () => {
-    setViewStep('processing');
-    setProcessingStatus({ stage: 1, text: 'Extracting questions from Class 10 Science paper...' });
-
-    setTimeout(() => {
-      setProcessingStatus({ stage: 2, text: 'Locating handwritten answer regions & bounding boxes...' });
-    }, 1000);
-
-    setTimeout(() => {
-      setProcessingStatus({ stage: 3, text: 'Mapping Q&A and calculating evaluation scores...' });
-    }, 2000);
-
-    setTimeout(() => {
-      setAssessmentData({
-        questions: MOCK_QUESTIONS,
-        answers: MOCK_ANSWERS,
-        unanswered: UNANSWERED_QUESTIONS,
-        summary: MOCK_SUMMARY,
-        asImages: [],
-        qpFileName: 'Class_10_Science_Question_Paper.pdf',
-        asFileName: 'rahul_sharma_answer_sheet.pdf'
-      });
-      setViewStep('results');
-    }, 3200);
-  };
-
-  const handleStartMapping = async () => {
-    if (!qpFile || !asFile) return;
+  const executeMappingFlow = async (targetQp, targetAs) => {
+    if (!targetQp || !targetAs) return;
 
     console.log('\n┌──────────────────────────────────────────────────┐');
     console.log('│         EXAMS PAGE — START MAPPING                │');
     console.log('└──────────────────────────────────────────────────┘');
-    console.log(`[ExamsPage] QP File: "${qpFile.name}" (${qpFile.type}, ${(qpFile.size / 1024).toFixed(1)} KB)`);
-    console.log(`[ExamsPage] AS File: "${asFile.name}" (${asFile.type}, ${(asFile.size / 1024).toFixed(1)} KB)`);
+    console.log(`[ExamsPage] QP File: "${targetQp.name}" (${targetQp.type}, ${(targetQp.size / 1024).toFixed(1)} KB)`);
+    console.log(`[ExamsPage] AS File: "${targetAs.name}" (${targetAs.type}, ${(targetAs.size / 1024).toFixed(1)} KB)`);
 
     setViewStep('processing');
 
@@ -66,11 +43,11 @@ export default function ExamsPage() {
       // Step 1: Convert files to images
       setProcessingStatus({ stage: 1, text: 'Rasterizing PDF / Image pages...' });
       console.log('[ExamsPage] Converting QP file to images...');
-      const qpImages = await convertFileToImages(qpFile);
+      const qpImages = await convertFileToImages(targetQp);
       console.log(`[ExamsPage] QP conversion done: ${qpImages.length} page(s)`);
 
       console.log('[ExamsPage] Converting AS file to images...');
-      const asImages = await convertFileToImages(asFile);
+      const asImages = await convertFileToImages(targetAs);
       console.log(`[ExamsPage] AS conversion done: ${asImages.length} page(s)`);
 
       if (!qpImages.length || !asImages.length) {
@@ -93,8 +70,8 @@ export default function ExamsPage() {
       setAssessmentData({
         ...result,
         asImages,
-        qpFileName: qpFile.name,
-        asFileName: asFile.name
+        qpFileName: targetQp.name,
+        asFileName: targetAs.name
       });
 
       setViewStep('results');
@@ -106,16 +83,55 @@ export default function ExamsPage() {
         unanswered: UNANSWERED_QUESTIONS,
         summary: MOCK_SUMMARY,
         asImages: [],
-        qpFileName: qpFile.name,
-        asFileName: asFile.name
+        qpFileName: targetQp.name,
+        asFileName: targetAs.name
       });
       setViewStep('results');
+    }
+  };
+
+  const handleStartMapping = () => {
+    executeMappingFlow(qpFile, asFile);
+  };
+
+  const handleLoadSampleData = async () => {
+    setIsSampleLoading(true);
+    setSampleError(null);
+
+    try {
+      const [qpRes, asRes] = await Promise.all([
+        fetch('/samples/question-paper.pdf'),
+        fetch('/samples/answer-sheet.pdf')
+      ]);
+
+      if (!qpRes.ok || !asRes.ok) {
+        throw new Error(`Sample files not found (${qpRes.status} / ${asRes.status})`);
+      }
+
+      const qpBlob = await qpRes.blob();
+      const asBlob = await asRes.blob();
+
+      const sampleQpFile = new File([qpBlob], 'Sample Question Paper.pdf', { type: 'application/pdf' });
+      const sampleAsFile = new File([asBlob], 'Sample Answer Sheet.pdf', { type: 'application/pdf' });
+
+      setQpFile(sampleQpFile);
+      setAsFile(sampleAsFile);
+      setIsSampleLoading(false);
+
+      // Automatically proceed through full extraction/mapping/grading pipeline
+      await executeMappingFlow(sampleQpFile, sampleAsFile);
+
+    } catch (err) {
+      console.error('[ExamsPage] ❌ Failed to fetch sample files:', err);
+      setIsSampleLoading(false);
+      setSampleError('Failed to load sample assessment files. Please verify sample files are available.');
     }
   };
 
   const handleResetUpload = () => {
     setQpFile(null);
     setAsFile(null);
+    setSampleError(null);
     setViewStep('upload');
   };
 
@@ -129,6 +145,9 @@ export default function ExamsPage() {
           onAsFileChange={setAsFile}
           onStartMapping={handleStartMapping}
           onLoadSampleData={handleLoadSampleData}
+          isSampleLoading={isSampleLoading}
+          sampleError={sampleError}
+          onClearSampleError={() => setSampleError(null)}
         />
       )}
 
@@ -145,8 +164,8 @@ export default function ExamsPage() {
           unanswered={assessmentData.unanswered}
           summary={assessmentData.summary}
           asImages={assessmentData.asImages}
-          qpFileName={assessmentData.qpFileName || qpFile?.name || 'Class_10_Science_Question_Paper.pdf'}
-          asFileName={assessmentData.asFileName || asFile?.name || 'student_answer_sheet.pdf'}
+          qpFileName={assessmentData.qpFileName || qpFile?.name || 'Sample_Question_Paper.pdf'}
+          asFileName={assessmentData.asFileName || asFile?.name || 'Sample_Answer_Sheet.pdf'}
           onResetUpload={handleResetUpload}
         />
       )}

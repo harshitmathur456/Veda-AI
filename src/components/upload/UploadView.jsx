@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef } from 'react';
-import { Upload, FileText, X, ArrowRight, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Upload, FileText, X, ArrowRight, Sparkles, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 
 export default function UploadView({
   qpFile,
@@ -9,7 +9,10 @@ export default function UploadView({
   onQpFileChange,
   onAsFileChange,
   onStartMapping,
-  onLoadSampleData
+  onLoadSampleData,
+  isSampleLoading = false,
+  sampleError = null,
+  onClearSampleError = () => {}
 }) {
   const qpInputRef = useRef(null);
   const asInputRef = useRef(null);
@@ -33,19 +36,45 @@ export default function UploadView({
     <div className="max-w-4xl mx-auto px-4 py-8 flex flex-col items-center">
       
       {/* Quick Demo Sample Bar */}
-      <div className="w-full max-w-2xl mb-6 bg-slate-900 text-white p-3.5 rounded-2xl shadow-sm flex items-center justify-between gap-4">
+      <div className="w-full max-w-2xl mb-4 bg-slate-900 text-white p-3.5 rounded-2xl shadow-sm flex items-center justify-between gap-4">
         <div className="flex items-center gap-2.5">
-          <Sparkles className="w-5 h-5 text-brand-500 fill-brand-500" />
-          <span className="text-xs font-bold">Want an instant demo? Load Class 10 Science Test sample files:</span>
+          <Sparkles className="w-5 h-5 text-brand-500 fill-brand-500 shrink-0" />
+          <span className="text-xs font-bold">Want an instant demo? Load a sample assessment:</span>
         </div>
         <button
           onClick={onLoadSampleData}
-          className="px-3.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white font-extrabold text-xs rounded-xl transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+          disabled={isSampleLoading}
+          className="px-3.5 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-60 text-white font-extrabold text-xs rounded-xl transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
         >
-          <span>Try Sample Assessment</span>
-          <ArrowRight className="w-3.5 h-3.5" />
+          {isSampleLoading ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Loading Sample...</span>
+            </>
+          ) : (
+            <>
+              <span>Try Sample Assessment</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </>
+          )}
         </button>
       </div>
+
+      {/* Sample Error Banner */}
+      {sampleError && (
+        <div className="w-full max-w-2xl mb-6 bg-rose-50 border border-rose-200 text-rose-800 p-3.5 rounded-2xl flex items-center justify-between text-xs font-bold animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{sampleError}</span>
+          </div>
+          <button
+            onClick={onClearSampleError}
+            className="p-1 hover:bg-rose-100 rounded-lg text-rose-600 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Main Title with Pastel Orange Background Rectangle */}
       <h1 className="text-3xl sm:text-4xl font-black text-slate-900 text-center tracking-tight mb-2 flex flex-wrap items-center justify-center gap-2">
@@ -117,7 +146,7 @@ export default function UploadView({
                     {qpFile.name}
                   </p>
                   <p className="text-[11px] text-slate-400 font-medium">
-                    {(qpFile.size / (1024 * 1024)).toFixed(0)}MB • 2 Pages
+                    {qpFile.size > 1024 * 1024 ? `${(qpFile.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(qpFile.size / 1024)} KB`}
                   </p>
                 </div>
               </div>
@@ -177,7 +206,7 @@ export default function UploadView({
                     {asFile.name}
                   </p>
                   <p className="text-[11px] text-slate-400 font-medium">
-                    {(asFile.size / (1024 * 1024)).toFixed(0)}MB • 6 Pages
+                    {asFile.size > 1024 * 1024 ? `${(asFile.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(asFile.size / 1024)} KB`}
                   </p>
                 </div>
               </div>
