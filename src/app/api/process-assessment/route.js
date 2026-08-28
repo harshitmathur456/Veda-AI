@@ -7,11 +7,15 @@ const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
 
+/**
+ * Try each model in sequence until one returns a valid response.
+ * This fallback chain handles model availability changes and rate limits
+ * without requiring manual config updates.
+ */
 async function callGeminiVision(contents) {
   let lastError;
   for (const modelName of [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)]) {
     try {
-      console.log(`[API] Trying Gemini model: ${modelName}`);
       const response = await ai.models.generateContent({
         model: modelName,
         contents,
@@ -20,7 +24,6 @@ async function callGeminiVision(contents) {
         return response;
       }
     } catch (err) {
-      console.warn(`[API] Model ${modelName} failed:`, err.message || err);
       lastError = err;
     }
   }
@@ -31,6 +34,10 @@ export const maxDuration = 120; // 2 minutes for long extractions
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Extract JSON from Gemini's response text, which may contain markdown fences
+ * or leading/trailing prose. Tries array match first, then object match.
+ */
 function extractJSON(text) {
   let cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
 
@@ -48,7 +55,7 @@ function extractJSON(text) {
     }
   }
 
-  console.error('[API] Could not extract JSON. Raw:', text.substring(0, 500));
+  console.error('[API] Could not extract JSON from response');
   return null;
 }
 
@@ -64,7 +71,9 @@ function buildImageParts(pageImages) {
 
 /**
  * Post-process: trim bounding boxes so consecutive answers on the same page
- * don't overlap. If bbox[i].ymax > bbox[i+1].ymin, clamp it.
+ * don't overlap. If bbox[i].ymax > bbox[i+1].ymin, clamp it down.
+ * This prevents the answer viewer from showing overlapping highlight regions
+ * when Gemini's bbox estimates are slightly too generous.
  */
 function trimOverlappingBboxes(answers) {
   const byPage = {};
@@ -80,7 +89,8 @@ function trimOverlappingBboxes(answers) {
       const curr = pageAnswers[i];
       const next = pageAnswers[i + 1];
       if (curr.bbox && next.bbox && curr.bbox.ymax > next.bbox.ymin) {
-        const gap = 1; // 1% gap between answers
+        // Leave a 1% gap between consecutive answer regions
+        const gap = 1;
         curr.bbox.ymax = Math.max(curr.bbox.ymin + 2, next.bbox.ymin - gap);
       }
     }
@@ -93,8 +103,6 @@ function trimOverlappingBboxes(answers) {
 // ─── Stage 1: Extract Questions ──────────────────────────────────────────
 
 async function extractQuestions(qpImages) {
-  console.log('\n[API STAGE 1] Extracting questions from', qpImages.length, 'page(s)');
-
   const prompt = `You are an expert exam paper analyzer. Look at the attached question paper image(s) carefully.
 
 Extract EVERY question in the exact order they appear. For questions with sub-parts (like 11a, 11b), create a separate entry for each sub-part.
@@ -127,16 +135,11 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
   ]);
 
-  const rawText = response.text;
-  console.log('[API STAGE 1] Response length:', rawText.length);
-  console.log('[API STAGE 1] Preview:', rawText.substring(0, 600));
-
-  const questions = extractJSON(rawText);
+  const questions = extractJSON(response.text);
   if (!Array.isArray(questions) || questions.length === 0) {
     throw new Error('Stage 1 failed: no questions extracted from response');
   }
 
-  console.log(`[API STAGE 1] ✅ ${questions.length} questions extracted`);
   return questions;
 }
 
@@ -144,12 +147,15 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
 // ─── Stage 2: Extract Handwritten Answers ────────────────────────────────
 
 async function extractAnswers(asImages, questions) {
-  console.log('\n[API STAGE 2] Extracting answers from', asImages.length, 'page(s)');
-
   const questionsSummary = questions.map(q =>
     `Q${q.qNo}${q.subPart || ''} (id: ${q.id}): "${q.text.substring(0, 100)}"`
   ).join('\n');
 
+  /**
+   * The bbox instructions are critical for the answer viewer overlay.
+   * Each answer's bounding box must end where the next answer begins,
+   * so the highlight rectangles don't overlap on the answer sheet image.
+   */
   const prompt = `You are an expert at reading handwritten student answer sheets. Analyze the attached handwritten answer sheet image(s).
 
 Here are the questions from the question paper:
@@ -193,37 +199,29 @@ Return ONLY the JSON array.`;
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
   ]);
 
-  const rawText = response.text;
-  console.log('[API STAGE 2] Response length:', rawText.length);
-  console.log('[API STAGE 2] Preview:', rawText.substring(0, 600));
-
-  const answers = extractJSON(rawText);
+  const answers = extractJSON(response.text);
   if (!Array.isArray(answers) || answers.length === 0) {
     throw new Error('Stage 2 failed: no answers extracted from response');
   }
 
-  // Post-process: trim overlapping bboxes
-  const trimmed = trimOverlappingBboxes(answers);
-
-  console.log(`[API STAGE 2] ✅ ${trimmed.length} answers extracted`);
-  trimmed.forEach(a => {
-    console.log(`  ${a.id} → ${a.questionId} page=${a.page} bbox=[${a.bbox?.ymin}-${a.bbox?.ymax}%] text="${(a.extractedText || '').substring(0, 50)}..."`);
-  });
-
-  return trimmed;
+  // Post-process: trim overlapping bboxes so the answer viewer renders cleanly
+  return trimOverlappingBboxes(answers);
 }
 
 
 // ─── Stage 3: Grade & Map ────────────────────────────────────────────────
 
 async function gradeAndMap(questions, answers) {
-  console.log('\n[API STAGE 3] Grading', answers.length, 'answers against', questions.length, 'questions');
-
   const payload = {
     questions: questions.map(q => ({ id: q.id, qNo: q.qNo, subPart: q.subPart, text: q.text, maxMarks: q.maxMarks })),
     answers: answers.map(a => ({ id: a.id, questionId: a.questionId, extractedText: a.extractedText })),
   };
 
+  /**
+   * The grading prompt uses a structured evaluation rubric to prevent the common
+   * failure mode where Gemini gives full marks for any written answer. The rubric
+   * forces per-question-type evaluation with explicit deduction rules.
+   */
   const prompt = `You are a strict academic exam evaluator and subject matter expert. Grade each student answer against its corresponding question.
 
 CRITICAL EVALUATION MANDATE:
@@ -290,17 +288,10 @@ Return ONLY the JSON object. No extra text or markdown.`;
     { role: 'user', parts: [{ text: prompt }] }
   ]);
 
-  const rawText = response.text;
-  console.log('[API STAGE 3] Response length:', rawText.length);
-  console.log('[API STAGE 3] Preview:', rawText.substring(0, 600));
-
-  const result = extractJSON(rawText);
+  const result = extractJSON(response.text);
   if (!result || !result.gradedAnswers) {
     throw new Error('Stage 3 failed: no grading result in response');
   }
-
-  console.log(`[API STAGE 3] ✅ Graded ${result.gradedAnswers.length} answers`);
-  console.log(`[API STAGE 3] Score: ${result.summary?.totalMarksObtained}/${result.summary?.totalMaxMarks}`);
 
   return result;
 }
@@ -309,12 +300,8 @@ Return ONLY the JSON object. No extra text or markdown.`;
 // ─── API Route Handler ───────────────────────────────────────────────────
 
 export async function POST(request) {
-  console.log('\n╔══════════════════════════════════════════════════╗');
-  console.log('║  /api/process-assessment — SERVER-SIDE PIPELINE  ║');
-  console.log('╚══════════════════════════════════════════════════╝');
-
   if (!ai) {
-    console.error('[API] ❌ No Gemini API key. Set GEMINI_API_KEY in .env.local');
+    console.error('[API] No Gemini API key configured');
     return NextResponse.json(
       { success: false, error: 'No Gemini API key configured. Set GEMINI_API_KEY in .env.local' },
       { status: 500 }
@@ -337,9 +324,7 @@ export async function POST(request) {
     );
   }
 
-  console.log(`[API] Received ${qpImages.length} QP images, ${asImages.length} AS images`);
-
-  // ─── Use streaming NDJSON for real-time progress ───────────────────────
+  // ─── Use streaming NDJSON for real-time progress updates to the client ───
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -349,21 +334,22 @@ export async function POST(request) {
       };
 
       try {
-        // Stage 1
+        // Stage 1: Extract structured question data from the question paper
         send({ type: 'progress', stage: 1, text: 'Extracting questions from question paper...' });
         const questions = await extractQuestions(qpImages);
         send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
 
-        // Stage 2
+        // Stage 2: Read handwritten answers and estimate bounding boxes
         send({ type: 'progress', stage: 2, text: `Reading handwritten answers from ${asImages.length} page(s)...` });
         const rawAnswers = await extractAnswers(asImages, questions);
         send({ type: 'progress', stage: 2, text: `Extracted ${rawAnswers.length} answers` });
 
-        // Stage 3
+        // Stage 3: Grade each answer against its question with detailed feedback
         send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
         const gradingResult = await gradeAndMap(questions, rawAnswers);
 
-        // Merge grading with bbox data from Stage 2
+        // Merge grading verdicts with spatial bbox data from Stage 2
+        // so the answer viewer can highlight the correct region on the sheet
         const mergedAnswers = gradingResult.gradedAnswers.map((graded) => {
           const rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
           return {
@@ -389,10 +375,8 @@ export async function POST(request) {
           },
         });
 
-        console.log('[API] ✅ Pipeline complete');
-
       } catch (err) {
-        console.error('[API] ❌ Pipeline error:', err);
+        console.error('[API] Pipeline error:', err);
         send({ type: 'error', error: err.message || 'Unknown pipeline error' });
       }
 

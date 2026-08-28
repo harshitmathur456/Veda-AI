@@ -17,7 +17,7 @@ export default function ClassroomPage() {
         </h1>
 
         <p className="text-sm font-semibold text-slate-500 max-w-md mb-8">
-          Roster management, gradebooks, and student attendance tracking for Grade 10 Science.
+          Roster management, gradebooks, and student attendance tracking.
         </p>
 
         <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm max-w-md w-full text-center">

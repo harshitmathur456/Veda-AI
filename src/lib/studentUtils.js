@@ -2,6 +2,7 @@ import { supabase } from './supabase.js';
 
 /**
  * Extract student name from handwritten answer sheet filename.
+ * Strips known scan/upload patterns and keywords to isolate the likely student name.
  * @param {string} filename 
  * @returns {{ studentName: string | null, studentNameSource: 'auto_detected' | 'unspecified' }}
  */
@@ -10,26 +11,26 @@ export function detectStudentNameFromFilename(filename) {
     return { studentName: null, studentNameSource: 'unspecified' };
   }
 
-  // 1. Remove extension
+  // Remove extension
   let nameWithoutExt = filename.replace(/\.[^/.]+$/, '');
 
-  // 2. Replace underscores, hyphens, periods with spaces
+  // Replace underscores, hyphens, periods with spaces
   let sanitized = nameWithoutExt.replace(/[_\-.]+/g, ' ').trim();
 
-  // 3. Remove known scan/camera patterns like scan001, IMG2384, image_01
+  // Remove known scan/camera patterns like scan001, IMG2384, image_01
   sanitized = sanitized.replace(/\b(scan|img|image|doc|photo|file)\d+\b/gi, '');
 
-  // 4. Tokenize
   const tokens = sanitized.split(/\s+/).filter(Boolean);
 
   const keywordsToStrip = new Set([
     'student', 'answer', 'answers', 'ans', 'sheet', 'sheets',
     'paper', 'pdf', 'doc', 'docx', 'copy', 'scan', 'scanned',
     'img', 'image', 'file', 'upload', 'assignment', 'test', 'exam',
-    'final', 'draft', 'v1', 'v2', 'new', 'page', 'pages'
+    'final', 'draft', 'v1', 'v2', 'new', 'page', 'pages',
+    'sample', 'question'
   ]);
 
-  // 5. Filter out known keywords and numeric-only tokens
+  // Filter out known keywords and numeric-only tokens
   const remainingTokens = tokens.filter(token => {
     const lower = token.toLowerCase();
     if (keywordsToStrip.has(lower)) return false;
@@ -37,14 +38,14 @@ export function detectStudentNameFromFilename(filename) {
     return true;
   });
 
-  // 6. Check if remaining tokens contain valid letters
+  // Check if remaining tokens contain valid letters
   const validNameTokens = remainingTokens.filter(t => /[a-zA-Z]/.test(t));
 
   if (validNameTokens.length === 0) {
     return { studentName: null, studentNameSource: 'unspecified' };
   }
 
-  // 7. Title-case the valid name tokens
+  // Title-case the valid name tokens
   const titleCased = validNameTokens.map(t => {
     const cleanToken = t.replace(/[^a-zA-Z]/g, '');
     if (!cleanToken) return '';
@@ -63,6 +64,8 @@ export function detectStudentNameFromFilename(filename) {
 
 /**
  * Save grading assessment result to Supabase assessment_results table.
+ * This is a non-blocking persistence layer — failures here must never
+ * break the grading UI or discard results already shown to the user.
  * @param {Object} params
  * @param {string} params.questionPaperName
  * @param {string} params.handwrittenAnsPdfName
@@ -93,8 +96,6 @@ export async function saveAssessmentResultToSupabase({
       max_marks: Number(maxMarks) || 0,
     };
 
-    console.log('[Supabase] Saving assessment result:', record);
-
     const { data, error } = await supabase
       .from('assessment_results')
       .insert([record])
@@ -105,7 +106,6 @@ export async function saveAssessmentResultToSupabase({
       return { success: false, error: error.message || 'Failed to save record to Supabase' };
     }
 
-    console.log('[Supabase] ✅ Successfully persisted record:', data);
     return { success: true, data: data?.[0] || record };
   } catch (err) {
     console.error('[Supabase] Exception during save:', err);

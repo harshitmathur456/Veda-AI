@@ -15,11 +15,6 @@ import { MOCK_QUESTIONS, MOCK_ANSWERS, UNANSWERED_QUESTIONS, MOCK_SUMMARY } from
  * @param {function} onProgressCallback
  */
 export async function processAssessmentWithGemini(qpImages, asImages, onProgressCallback = () => {}) {
-  console.log('\n╔══════════════════════════════════════════════════╗');
-  console.log('║  CLIENT — Sending to /api/process-assessment     ║');
-  console.log('╚══════════════════════════════════════════════════╝');
-  console.log(`QP images: ${qpImages?.length || 0}, AS images: ${asImages?.length || 0}`);
-
   if (!qpImages?.length || !asImages?.length) {
     console.error('[Client] No images to process');
     onProgressCallback({ stage: 4, text: 'No images — using sample data' });
@@ -40,7 +35,7 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
       throw new Error(`API returned ${response.status}: ${errText}`);
     }
 
-    // Stream NDJSON progress updates
+    // Stream NDJSON progress updates from the server pipeline
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -60,23 +55,18 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
           const msg = JSON.parse(line);
 
           if (msg.type === 'progress') {
-            console.log(`[Client] Stage ${msg.stage}: ${msg.text}`);
             onProgressCallback({ stage: msg.stage, text: msg.text });
           } else if (msg.type === 'result') {
-            console.log('[Client] ✅ Received final result');
-            console.log(`  Questions: ${msg.data?.questions?.length}`);
-            console.log(`  Answers: ${msg.data?.answers?.length}`);
-            console.log(`  Score: ${msg.data?.summary?.totalMarksObtained}/${msg.data?.summary?.totalMaxMarks}`);
             finalResult = msg.data;
           } else if (msg.type === 'error') {
-            console.error('[Client] ❌ Server error:', msg.error);
+            console.error('[Client] Server error:', msg.error);
             throw new Error(msg.error);
           }
         } catch (parseErr) {
+          // Re-throw actual pipeline errors; ignore NDJSON parse issues
           if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage')) {
-            throw parseErr; // Re-throw pipeline errors
+            throw parseErr;
           }
-          console.warn('[Client] Failed to parse NDJSON line:', line.substring(0, 100));
         }
       }
     }
@@ -93,7 +83,7 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
       ? 'Connection failed (server offline or network error)'
       : err.message || 'Unknown pipeline error';
 
-    console.warn('[Client] ⚠ Pipeline issue encountered:', friendlyErrMsg);
+    console.error('[Client] Pipeline error:', friendlyErrMsg);
 
     onProgressCallback({
       stage: 0,

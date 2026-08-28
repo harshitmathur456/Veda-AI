@@ -31,41 +31,23 @@ export default function ExamsPage() {
   const executeMappingFlow = async (targetQp, targetAs) => {
     if (!targetQp || !targetAs) return;
 
-    console.log('\n┌──────────────────────────────────────────────────┐');
-    console.log('│         EXAMS PAGE — START MAPPING                │');
-    console.log('└──────────────────────────────────────────────────┘');
-    console.log(`[ExamsPage] QP File: "${targetQp.name}" (${targetQp.type}, ${(targetQp.size / 1024).toFixed(1)} KB)`);
-    console.log(`[ExamsPage] AS File: "${targetAs.name}" (${targetAs.type}, ${(targetAs.size / 1024).toFixed(1)} KB)`);
-
     setViewStep('processing');
 
     try {
-      // Step 1: Convert files to images
+      // Step 1: Convert uploaded files to page images for the Gemini vision pipeline
       setProcessingStatus({ stage: 1, text: 'Rasterizing PDF / Image pages...' });
-      console.log('[ExamsPage] Converting QP file to images...');
       const qpImages = await convertFileToImages(targetQp);
-      console.log(`[ExamsPage] QP conversion done: ${qpImages.length} page(s)`);
-
-      console.log('[ExamsPage] Converting AS file to images...');
       const asImages = await convertFileToImages(targetAs);
-      console.log(`[ExamsPage] AS conversion done: ${asImages.length} page(s)`);
 
       if (!qpImages.length || !asImages.length) {
-        console.error('[ExamsPage] ❌ File conversion failed — no images produced');
+        console.error('[ExamsPage] File conversion failed — no images produced');
       }
 
-      // Step 2: Run Gemini pipeline
-      console.log('[ExamsPage] Starting Gemini pipeline...');
+      // Step 2: Send page images through the 3-stage Gemini pipeline (extract → map → grade)
+      setProcessingStatus({ stage: 1, text: 'Sending files to AI engine...' });
       const result = await processAssessmentWithGemini(qpImages, asImages, (status) => {
-        console.log(`[ExamsPage] Pipeline progress: Stage ${status.stage} — ${status.text}`);
         setProcessingStatus(status);
       });
-
-      console.log('[ExamsPage] Pipeline complete. Result summary:');
-      console.log(`  Questions: ${result.questions?.length || 0}`);
-      console.log(`  Answers: ${result.answers?.length || 0}`);
-      console.log(`  Unanswered: ${result.unanswered?.length || 0}`);
-      console.log(`  Score: ${result.summary?.totalMarksObtained}/${result.summary?.totalMaxMarks}`);
 
       setAssessmentData({
         ...result,
@@ -76,7 +58,8 @@ export default function ExamsPage() {
 
       setViewStep('results');
     } catch (error) {
-      console.error('[ExamsPage] ❌ Pipeline error:', error);
+      console.error('[ExamsPage] Pipeline error:', error);
+      // Fallback to mock data so the UI never breaks on pipeline failure
       setAssessmentData({
         questions: MOCK_QUESTIONS,
         answers: MOCK_ANSWERS,
@@ -118,11 +101,11 @@ export default function ExamsPage() {
       setAsFile(sampleAsFile);
       setIsSampleLoading(false);
 
-      // Automatically proceed through full extraction/mapping/grading pipeline
+      // Automatically proceed through the full extraction/mapping/grading pipeline
       await executeMappingFlow(sampleQpFile, sampleAsFile);
 
     } catch (err) {
-      console.error('[ExamsPage] ❌ Failed to fetch sample files:', err);
+      console.error('[ExamsPage] Failed to fetch sample files:', err);
       setIsSampleLoading(false);
       setSampleError('Failed to load sample assessment files. Please verify sample files are available.');
     }

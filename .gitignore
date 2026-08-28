@@ -26,4 +26,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-.vercel
+# planning / assignment artifacts
+Samples/
+UI UX/
+supabase/
+Assignment.pdf
+VedaAI_Assignment_PRD.md

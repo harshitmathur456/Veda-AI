@@ -6,6 +6,7 @@
 
 /**
  * Resize and compress an HTML Image or Canvas element to a lightweight JPEG base64 string.
+ * Uses canvas downscaling to keep payload sizes manageable for the Gemini API.
  * @param {HTMLImageElement | HTMLCanvasElement} source 
  * @param {number} maxDim - Maximum width or height in pixels
  * @param {number} quality - JPEG compression quality (0.0 to 1.0)
@@ -40,32 +41,27 @@ function compressToJpeg(source, maxDim = 1600, quality = 0.8) {
  */
 export async function convertFileToImages(file) {
   if (!file) {
-    console.warn('[pdfUtils] No file provided');
     return [];
   }
 
-  console.log(`[pdfUtils] Processing file: "${file.name}" (${file.type}, ${(file.size / 1024).toFixed(1)} KB)`);
-
   // ─── Image files: read & compress ─────────────────────────────────────────
   if (file.type.startsWith('image/')) {
-    console.log('[pdfUtils] File is an image — compressing and converting');
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
           const base64 = compressToJpeg(img, 1600, 0.8);
-          console.log(`[pdfUtils] ✅ Image compressed: ${(base64.length / 1024).toFixed(0)} KB base64`);
           resolve([{ page: 1, base64 }]);
         };
-        img.onerror = (err) => {
-          console.warn('[pdfUtils] Failed to load image element, fallback to raw base64');
+        img.onerror = () => {
+          // Fallback to raw base64 if the image element fails to load
           resolve([{ page: 1, base64: e.target.result }]);
         };
         img.src = e.target.result;
       };
       reader.onerror = (err) => {
-        console.error('[pdfUtils] ❌ FileReader error:', err);
+        console.error('[pdfUtils] FileReader error:', err);
         reject(err);
       };
       reader.readAsDataURL(file);
@@ -74,28 +70,22 @@ export async function convertFileToImages(file) {
 
   // ─── PDF files: render each page to canvas & compress to JPEG ────────────
   if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-    console.log('[pdfUtils] File is a PDF — rendering pages to compressed images');
-
     try {
       if (typeof window === 'undefined') {
-        console.error('[pdfUtils] ❌ Cannot render PDF on server side');
+        console.error('[pdfUtils] Cannot render PDF on server side');
         return [];
       }
 
-      // Dynamic import of pdfjs-dist
+      // Dynamic import of pdfjs-dist to keep initial bundle size small
       const pdfjsLib = await import('pdfjs-dist');
 
-      // Set the worker source — use bundled worker from pdfjs-dist
+      // Set the worker source — use bundled worker from pdfjs-dist CDN
       if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
         pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-        console.log(`[pdfUtils] Set PDF.js worker to v${pdfjsLib.version}`);
       }
 
-      // Read file as ArrayBuffer
       const arrayBuffer = await file.arrayBuffer();
-      console.log(`[pdfUtils] ArrayBuffer size: ${(arrayBuffer.byteLength / 1024).toFixed(1)} KB`);
 
-      // Load PDF document
       const loadingTask = pdfjsLib.getDocument({
         data: new Uint8Array(arrayBuffer),
         useSystemFonts: true,
@@ -103,10 +93,10 @@ export async function convertFileToImages(file) {
 
       const pdf = await loadingTask.promise;
       const numPages = pdf.numPages;
-      console.log(`[pdfUtils] PDF loaded: ${numPages} page(s)`);
 
       const pageImages = [];
-      const RENDER_SCALE = 1.8; // High readability scale
+      // Scale factor chosen to balance readability vs. base64 payload size
+      const RENDER_SCALE = 1.8;
 
       for (let i = 1; i <= numPages; i++) {
         try {
@@ -127,27 +117,25 @@ export async function convertFileToImages(file) {
           const base64 = compressToJpeg(canvas, 1600, 0.8);
 
           pageImages.push({ page: i, base64 });
-          console.log(`[pdfUtils] ✅ Page ${i}/${numPages}: ${viewport.width}x${viewport.height}px → ${(base64.length / 1024).toFixed(0)} KB base64`);
 
+          // Release canvas memory immediately after encoding
           canvas.width = 0;
           canvas.height = 0;
         } catch (pageErr) {
-          console.error(`[pdfUtils] ❌ Failed to render page ${i}:`, pageErr);
+          console.error(`[pdfUtils] Failed to render page ${i}:`, pageErr);
         }
       }
 
       if (pageImages.length === 0) {
-        console.error('[pdfUtils] ❌ No pages were rendered successfully');
-      } else {
-        console.log(`[pdfUtils] ✅ Total: ${pageImages.length}/${numPages} pages rendered`);
+        console.error('[pdfUtils] No pages were rendered successfully');
       }
 
       return pageImages;
 
     } catch (err) {
-      console.error('[pdfUtils] ❌ PDF processing failed:', err);
+      console.error('[pdfUtils] PDF processing failed:', err);
 
-      console.log('[pdfUtils] Attempting generic FileReader fallback...');
+      // Fallback: read the raw file as a single data URL
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -160,7 +148,6 @@ export async function convertFileToImages(file) {
   }
 
   // ─── Unknown file types: generic read ─────────────────────────────────────
-  console.warn(`[pdfUtils] ⚠ Unknown file type: ${file.type}. Attempting generic read.`);
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = (e) => resolve([{ page: 1, base64: e.target.result }]);
