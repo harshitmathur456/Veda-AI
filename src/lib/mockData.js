@@ -335,5 +335,5 @@ export const MOCK_SUMMARY = {
   unmatchedCount: 0,
   strengths: ["Plant Biology & Photosynthesis", "Calculations & Pulmonary Ventilation"],
   weakAreas: ["Human Cardiac Blood Flow Valves"],
-  overallTeacherNote: "Madhur's student demonstrated high accuracy in Biology & Physiology concepts with neat diagrams. Heart valve sequence needs review."
+  overallTeacherNote: "Harshit's student demonstrated high accuracy in Biology & Physiology concepts with neat diagrams. Heart valve sequence needs review."
 };

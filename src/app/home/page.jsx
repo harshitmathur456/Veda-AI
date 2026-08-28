@@ -18,7 +18,7 @@ export default function HomePage() {
         </h1>
 
         <p className="text-sm font-semibold text-slate-500 max-w-md mb-8">
-          Welcome back, Madhur! Manage your classroom activities, track student performance analytics, and access AI tools.
+          Welcome back, Harshit! Manage your classroom activities, track student performance analytics, and access AI tools.
         </p>
 
         <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm max-w-lg w-full text-left space-y-4">
