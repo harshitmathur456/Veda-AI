@@ -2,16 +2,15 @@ import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { computeHighlightRegion, cleanTextForMatch } from '../../../lib/highlightUtils';
 
-// ─── Server-side only — Use only GEMINI_API_KEY_4 for fast, dedicated calls ──
+// ─── Server-side only — Prioritize GEMINI_API_KEY_1 as primary fast key ──────
 function getAIClients() {
-  // Always use GEMINI_API_KEY_4 as the primary (dedicated fast key)
-  const primaryKey = process.env.GEMINI_API_KEY_4;
+  const primaryKey = process.env.GEMINI_API_KEY_1;
   if (primaryKey && primaryKey.trim()) {
-    return [{ label: 'key-4', client: new GoogleGenAI({ apiKey: primaryKey.trim() }) }];
+    return [{ label: 'key-1', client: new GoogleGenAI({ apiKey: primaryKey.trim() }) }];
   }
 
-  // Emergency fallback: try numbered keys 1-3 if key-4 is somehow missing
-  for (let i = 3; i >= 1; i--) {
+  // Emergency fallback: try other keys if key-1 is missing
+  for (const i of [4, 3, 2]) {
     const val = process.env[`GEMINI_API_KEY_${i}`];
     if (val && val.trim()) {
       return [{ label: `key-${i}`, client: new GoogleGenAI({ apiKey: val.trim() }) }];
@@ -27,8 +26,8 @@ function getAIClients() {
   return [];
 }
 
-const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-1.5-flash'];
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
 const exhaustedKeyTimestamps = new Map();
