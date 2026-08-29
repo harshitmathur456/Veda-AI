@@ -59,22 +59,21 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
 
       for (const line of lines) {
         if (!line.trim()) continue;
+        let msg;
         try {
-          const msg = JSON.parse(line);
-
-          if (msg.type === 'progress') {
-            onProgressCallback({ stage: msg.stage, text: msg.text });
-          } else if (msg.type === 'result') {
-            finalResult = msg.data;
-          } else if (msg.type === 'error') {
-            console.error('[Client Pipeline] Server pipeline error:', msg.error);
-            throw new Error(msg.error);
-          }
+          msg = JSON.parse(line);
         } catch (parseErr) {
-          // Re-throw actual pipeline errors; ignore NDJSON parse issues
-          if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage') || parseErr.message?.includes('failed') || parseErr.message?.includes('All Gemini')) {
-            throw parseErr;
-          }
+          console.warn('[Client Pipeline] Skipping malformed NDJSON line:', line.substring(0, 100));
+          continue;
+        }
+
+        if (msg.type === 'progress') {
+          onProgressCallback({ stage: msg.stage, text: msg.text });
+        } else if (msg.type === 'result') {
+          finalResult = msg.data;
+        } else if (msg.type === 'error') {
+          console.error('[Client Pipeline] Server pipeline error received:', msg.error);
+          throw new Error(msg.error);
         }
       }
     }

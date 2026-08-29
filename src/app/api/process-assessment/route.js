@@ -21,8 +21,11 @@ function getAIClients() {
   }));
 }
 
-const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash'];
+const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash'];
+
+// In-memory set of keys that recently hit 429 quota limits, so subsequent calls skip dead keys immediately
+const exhaustedKeyLabels = new Set();
 
 /**
  * Check if an error is a rate-limit / quota-exhausted error
@@ -49,8 +52,9 @@ function isQuotaOrRateLimitError(err) {
  * Call Gemini with multi-key + multi-model fallback.
  *
  * Strategy:
+ *  - Filter out recently exhausted keys first.
  *  - For each API key, try each model in sequence.
- *  - If a call fails with a quota/rate-limit error, move to the next key.
+ *  - If a call fails with a quota/rate-limit error, remember the key as exhausted and move to the next key.
  *  - If a call fails with a non-quota error (network, malformed, etc.),
  *    try the next model under the SAME key, then move to the next key.
  *  - Only surface the final error if ALL keys × models are exhausted.
@@ -68,7 +72,11 @@ async function callGeminiVision(contents, stageName = 'unknown') {
   const modelsToTry = [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)];
   let lastError;
 
-  for (const { label: keyLabel, client: aiClient } of aiClients) {
+  // Prefer keys that haven't hit quota limits yet
+  const availableClients = aiClients.filter(c => !exhaustedKeyLabels.has(c.label));
+  const clientsToTry = availableClients.length > 0 ? availableClients : aiClients;
+
+  for (const { label: keyLabel, client: aiClient } of clientsToTry) {
     let hitQuotaOnThisKey = false;
 
     for (const modelName of modelsToTry) {
@@ -99,7 +107,8 @@ async function callGeminiVision(contents, stageName = 'unknown') {
         lastError = err;
 
         if (isQuotaOrRateLimitError(err)) {
-          console.warn(`[API][${stageName}] ${keyLabel} hit quota/rate limit — switching to next key`);
+          console.warn(`[API][${stageName}] ${keyLabel} hit quota/rate limit — remembering as exhausted and switching to next key`);
+          exhaustedKeyLabels.add(keyLabel);
           hitQuotaOnThisKey = true;
           break; // skip remaining models for this key, try next key
         }
@@ -118,7 +127,7 @@ async function callGeminiVision(contents, stageName = 'unknown') {
   throw lastError || new Error('All Gemini API keys and models failed');
 }
 
-export const maxDuration = 120; // 2 minutes for long extractions
+export const maxDuration = 300; // 5 minutes for long vision extractions
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -499,10 +508,10 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
 
 // ─── Stage 2: Extract Handwritten Answers ────────────────────────────────
 
-async function extractAnswers(asImages, questions) {
-  const questionsSummary = questions.map(q =>
+async function extractAnswers(asImages, questions = []) {
+  const questionsSummary = questions?.length > 0 ? questions.map(q =>
     `Q${q.qNo}${q.subPart || ''} (id: ${q.id}): "${q.text.substring(0, 100)}"`
-  ).join('\n');
+  ).join('\n') : '';
 
   /**
    * The bbox instructions are critical for the answer viewer overlay.
@@ -510,13 +519,10 @@ async function extractAnswers(asImages, questions) {
    * so the highlight rectangles don't overlap on the answer sheet image.
    */
   const prompt = `You are an expert at reading handwritten student answer sheets. Analyze the attached handwritten answer sheet image(s).
-
-Here are the questions from the question paper:
-${questionsSummary}
-
+${questionsSummary ? `Here are the questions from the question paper:\n${questionsSummary}\n` : ''}
 For EACH handwritten answer visible on the answer sheet:
 1. Read the handwritten text carefully, even if messy.
-2. Match it to the correct question by the question number the student wrote, or by content.
+2. Identify the question number the student wrote (e.g. Q1 -> "q1", Q2 -> "q2", Q11(a) -> "q11_a", Q18(a) -> "q18_a", Q18(b) -> "q18_b").
 3. Estimate a TIGHT bounding box for that answer as percentage coordinates (0-100).
 
 CRITICAL bounding box rules:
@@ -693,16 +699,14 @@ export async function POST(request) {
       };
 
       try {
-        // Stage 1: Extract structured question data from the question paper
-        send({ type: 'progress', stage: 1, text: 'Extracting questions from question paper...' });
-        const rawQuestions = await extractQuestions(qpImages);
+        // Stage 1 & Stage 2: Extract questions and handwritten answers in parallel
+        send({ type: 'progress', stage: 1, text: 'Extracting questions & handwritten answers in parallel...' });
+        const [rawQuestions, rawAnswers] = await Promise.all([
+          extractQuestions(qpImages),
+          extractAnswers(asImages)
+        ]);
         const questions = detectAndTagAlternativeGroups(rawQuestions);
-        send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
-
-        // Stage 2: Read handwritten answers and estimate bounding boxes
-        send({ type: 'progress', stage: 2, text: `Reading handwritten answers from ${asImages.length} page(s)...` });
-        const rawAnswers = await extractAnswers(asImages, questions);
-        send({ type: 'progress', stage: 2, text: `Extracted ${rawAnswers.length} answers` });
+        send({ type: 'progress', stage: 2, text: `Extracted ${questions.length} questions & ${rawAnswers.length} student answers` });
 
         // Stage 3: Resolve alternative choice selections & grade
         send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
