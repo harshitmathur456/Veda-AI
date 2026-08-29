@@ -265,9 +265,33 @@ function buildImageParts(pageImages) {
 
 
 /**
+ * Helper to determine top-level OR-side ('a' vs 'b') from subPart, id, or text.
+ */
+function resolveAlternativeOption(q) {
+  if (q.alternativeOption) {
+    const cleanOpt = String(q.alternativeOption).toLowerCase().trim();
+    if (cleanOpt === 'a' || cleanOpt === 'b') return cleanOpt;
+  }
+
+  const str = `${q.subPart || ''} ${q.id || ''} ${q.text || ''}`;
+  
+  // 1. Check for explicit (a) or (b) markers
+  if (/\b18a\b|\b20a\b|\b21a\b|\(a\)|a\.\(|a\(i|q\d+_a/i.test(str)) return 'a';
+  if (/\b18b\b|\b20b\b|\b21b\b|\(b\)|b\.\(|b\(i|q\d+_b/i.test(str)) return 'b';
+  
+  // 2. Regex match for leading 'a' or 'b'
+  const match = str.match(/\b([ab])\b|\b([ab])[\(\.\_]/i);
+  if (match) {
+    return (match[1] || match[2]).toLowerCase();
+  }
+
+  return 'a'; // default option side if unspecified
+}
+
+/**
  * Deterministically ensure questions with OR options are tagged properly
- * with isAlternativeGroup, alternativeGroupId, and alternativeOption.
- * Required sub-parts without an explicit 'OR' label remain standard required questions.
+ * with isAlternativeGroup, alternativeGroupId, and alternativeOption ('a' vs 'b').
+ * Sub-parts like (i) and (ii) remain sub-parts under their parent option ('a' or 'b').
  */
 function detectAndTagAlternativeGroups(questions) {
   if (!Array.isArray(questions)) return questions;
@@ -288,10 +312,7 @@ function detectAndTagAlternativeGroups(questions) {
       group.forEach(q => {
         q.isAlternativeGroup = true;
         q.alternativeGroupId = String(q.alternativeGroupId || qNo);
-        if (!q.alternativeOption) {
-          const match = (q.subPart || q.id || '').match(/[a-bA-B]/);
-          q.alternativeOption = match ? match[0].toLowerCase() : null;
-        }
+        q.alternativeOption = resolveAlternativeOption(q);
       });
     } else {
       group.forEach(q => {
@@ -306,7 +327,7 @@ function detectAndTagAlternativeGroups(questions) {
     ...q,
     isAlternativeGroup: Boolean(q.isAlternativeGroup),
     alternativeGroupId: q.isAlternativeGroup ? (q.alternativeGroupId ? String(q.alternativeGroupId) : String(q.qNo)) : null,
-    alternativeOption: q.isAlternativeGroup ? (q.alternativeOption || null) : null,
+    alternativeOption: q.isAlternativeGroup ? (q.alternativeOption || resolveAlternativeOption(q)) : null,
   }));
 }
 
@@ -364,12 +385,12 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
 
   const excludedQIds = new Set();
 
-  // For each OR alternative group:
+  // For each OR alternative group (e.g. Q18, Q20, Q21):
   Object.entries(altGroups).forEach(([gid, groupQuestions]) => {
-    // Group subquestions by alternativeOption ('a', 'b', etc.)
+    // Group subquestions strictly by parent OR option side ('a' vs 'b')
     const byOption = {};
     groupQuestions.forEach(q => {
-      const opt = (q.alternativeOption || 'a').toLowerCase();
+      const opt = (q.alternativeOption || resolveAlternativeOption(q)).toLowerCase();
       if (!byOption[opt]) byOption[opt] = [];
       byOption[opt].push(q);
     });
@@ -377,7 +398,7 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
     const options = Object.keys(byOption);
     if (options.length <= 1) return;
 
-    // Calculate score / attempt for each option
+    // Calculate score / attempt stats for each option side as a whole
     const optionStats = options.map(opt => {
       const optQs = byOption[opt];
       const optQIds = new Set(optQs.map(q => q.id));
@@ -385,7 +406,7 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
       
       const totalMarks = optGraded.reduce((sum, g) => sum + (Number(g.marks) || 0), 0);
       const hasAnyMarks = optGraded.some(g => Number(g.marks) > 0);
-      const hasAttemptedRationale = optGraded.some(g => g.rationale && !g.rationale.toLowerCase().includes('not attempted'));
+      const hasAttemptedRationale = optGraded.some(g => g.rationale && !g.rationale.toLowerCase().includes('not attempted') && !g.rationale.toLowerCase().includes('choice not selected'));
       
       return {
         option: opt,
@@ -396,19 +417,19 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
       };
     });
 
-    // Find attempted options
+    // Find attempted option side
     const attemptedOptions = optionStats.filter(s => s.isAttempted);
 
-    let chosenOption = options[0]; // default to first option if none attempted
+    let chosenOption = options[0]; // default to 'a' if none attempted
     if (attemptedOptions.length === 1) {
       chosenOption = attemptedOptions[0].option;
     } else if (attemptedOptions.length > 1) {
-      // If student attempted both options, pick the higher scoring one
+      // If student attempted both option sides, pick the higher scoring option side
       attemptedOptions.sort((a, b) => b.totalMarks - a.totalMarks);
       chosenOption = attemptedOptions[0].option;
     }
 
-    // Exclude all other options in this OR group
+    // Exclude ONLY questions belonging to non-chosen option sides
     options.forEach(opt => {
       if (opt !== chosenOption) {
         byOption[opt].forEach(q => {
