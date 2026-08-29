@@ -2,32 +2,31 @@ import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { computeHighlightRegion, cleanTextForMatch, isLineMatch } from '../../../lib/highlightUtils';
 
-// ─── Server-side only — Prioritize GEMINI_API_KEY_1 as primary fast key ──────
+// ─── Server-side only — Multi-key setup prioritizing GEMINI_API_KEY_2 ─────────
 function getAIClients() {
-  const primaryKey = process.env.GEMINI_API_KEY_1;
-  if (primaryKey && primaryKey.trim()) {
-    return [{ label: 'key-1', client: new GoogleGenAI({ apiKey: primaryKey.trim() }) }];
-  }
+  const preferredOrder = [2, 3, 4, 1];
+  const clients = [];
 
-  // Emergency fallback: try other keys if key-1 is missing
-  for (const i of [4, 3, 2]) {
+  for (const i of preferredOrder) {
     const val = process.env[`GEMINI_API_KEY_${i}`];
     if (val && val.trim()) {
-      return [{ label: `key-${i}`, client: new GoogleGenAI({ apiKey: val.trim() }) }];
+      clients.push({ label: `key-${i}`, client: new GoogleGenAI({ apiKey: val.trim() }) });
     }
   }
 
   // Last resort: legacy key
-  const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-  if (legacyKey && legacyKey.trim()) {
-    return [{ label: 'key-legacy', client: new GoogleGenAI({ apiKey: legacyKey.trim() }) }];
+  if (clients.length === 0) {
+    const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+    if (legacyKey && legacyKey.trim()) {
+      clients.push({ label: 'key-legacy', client: new GoogleGenAI({ apiKey: legacyKey.trim() }) });
+    }
   }
 
-  return [];
+  return clients;
 }
 
-const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-1.5-flash'];
+const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'];
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
 const exhaustedKeyTimestamps = new Map();
