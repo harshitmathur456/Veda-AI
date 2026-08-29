@@ -48,8 +48,8 @@ export default function ResultsView({
   // Save to Supabase function
   const performSave = async (currentName, currentSource) => {
     setIsSaving(true);
-    const marksScored = summary?.totalMarksObtained ?? answers.reduce((acc, a) => acc + (Number(a.marks) || 0), 0);
-    const maxMarks = summary?.totalMaxMarks ?? questions.reduce((acc, q) => acc + (Number(q.maxMarks) || 0), 0);
+    const marksScored = summary?.totalMarksObtained ?? answers.filter(a => !a.isExcludedAlternative).reduce((acc, a) => acc + (Number(a.marks) || 0), 0);
+    const maxMarks = summary?.totalMaxMarks ?? questions.filter(q => !q.isExcludedAlternative).reduce((acc, q) => acc + (Number(q.maxMarks) || 0), 0);
 
     const res = await saveAssessmentResultToSupabase({
       questionPaperName: qpFileName,

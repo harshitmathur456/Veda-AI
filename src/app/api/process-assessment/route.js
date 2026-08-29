@@ -61,7 +61,7 @@ function extractJSON(text) {
 
 function buildImageParts(pageImages) {
   return pageImages.map((img) => {
-    const match = img.base64.match(/^data:(image\/\w+);base64,(.+)$/);
+    const match = img.base64.match(/^data:(image\/\w+|application\/pdf);base64,(.+)$/);
     if (match) {
       return { inlineData: { mimeType: match[1], data: match[2] } };
     }
@@ -99,6 +99,202 @@ function trimOverlappingBboxes(answers) {
   return answers;
 }
 
+/**
+ * Deterministically ensure questions with OR options are tagged properly
+ * with isAlternativeGroup, alternativeGroupId, and alternativeOption.
+ * Required sub-parts without an explicit 'OR' label remain standard required questions.
+ */
+function detectAndTagAlternativeGroups(questions) {
+  if (!Array.isArray(questions)) return questions;
+
+  const byQNo = {};
+  questions.forEach(q => {
+    const qNoStr = String(q.qNo || '').trim();
+    if (!byQNo[qNoStr]) byQNo[qNoStr] = [];
+    byQNo[qNoStr].push(q);
+  });
+
+  Object.entries(byQNo).forEach(([qNo, group]) => {
+    const hasOrLabel = group.some(q => /\bOR\b/i.test(q.text || '')) ||
+                       group.some(q => q.subPart && /\bOR\b/i.test(q.subPart));
+    const alreadyTagged = group.some(q => q.isAlternativeGroup === true);
+
+    if (alreadyTagged || hasOrLabel) {
+      group.forEach(q => {
+        q.isAlternativeGroup = true;
+        q.alternativeGroupId = String(q.alternativeGroupId || qNo);
+        if (!q.alternativeOption) {
+          const match = (q.subPart || q.id || '').match(/[a-bA-B]/);
+          q.alternativeOption = match ? match[0].toLowerCase() : null;
+        }
+      });
+    } else {
+      group.forEach(q => {
+        q.isAlternativeGroup = false;
+        q.alternativeGroupId = null;
+        q.alternativeOption = null;
+      });
+    }
+  });
+
+  return questions.map(q => ({
+    ...q,
+    isAlternativeGroup: Boolean(q.isAlternativeGroup),
+    alternativeGroupId: q.isAlternativeGroup ? (q.alternativeGroupId ? String(q.alternativeGroupId) : String(q.qNo)) : null,
+    alternativeOption: q.isAlternativeGroup ? (q.alternativeOption || null) : null,
+  }));
+}
+
+/**
+ * Resolve alternative group selections before grading.
+ * Identifies which side of an OR option was attempted and marks unattempted sides for exclusion.
+ */
+function resolveAlternativeGroupSelections(questions, rawAnswers) {
+  const attemptedQIds = new Set();
+  rawAnswers.forEach(ans => {
+    if (ans.questionId) attemptedQIds.add(ans.questionId);
+    if (ans.id) {
+      const qId = ans.id.replace(/^ans_/, '');
+      attemptedQIds.add(qId);
+    }
+  });
+
+  const altGroups = {};
+  questions.forEach(q => {
+    if (q.isAlternativeGroup && q.alternativeGroupId) {
+      const gid = q.alternativeGroupId;
+      if (!altGroups[gid]) altGroups[gid] = [];
+      altGroups[gid].push(q);
+    }
+  });
+
+  const excludedQIds = new Set();
+
+  Object.entries(altGroups).forEach(([gid, groupQuestions]) => {
+    const attemptedInGroup = groupQuestions.filter(q => attemptedQIds.has(q.id));
+
+    if (attemptedInGroup.length === 1) {
+      // Single attempt: student answered only one side (e.g. 18a).
+      // Keep that side active; exclude the other side(s) entirely from scoring.
+      const activeQ = attemptedInGroup[0];
+      groupQuestions.forEach(q => {
+        if (q.id !== activeQ.id) {
+          excludedQIds.add(q.id);
+        }
+      });
+    } else if (attemptedInGroup.length > 1) {
+      // Student attempted both sides. Grade both; higher score will be kept post-grading.
+    } else {
+      // Neither side was attempted (0 attempts).
+      // Keep the first option (e.g. 18a) as active unanswered, exclude second option (18b).
+      groupQuestions.slice(1).forEach(q => {
+        excludedQIds.add(q.id);
+      });
+    }
+  });
+
+  return excludedQIds;
+}
+
+/**
+ * Finalize grading results and compute deterministic summary math.
+ */
+function finalizeGradingAndSummary(questions, rawAnswers, gradingResult, preExcludedQIds) {
+  const gradedAnswers = gradingResult.gradedAnswers || [];
+
+  const gradedMap = new Map();
+  gradedAnswers.forEach(g => {
+    const qId = g.questionId || g.id?.replace(/^ans_/, '');
+    gradedMap.set(qId, g);
+  });
+
+  // Handle tie-breaking / dual attempts for alternative groups
+  const altGroups = {};
+  questions.forEach(q => {
+    if (q.isAlternativeGroup && q.alternativeGroupId) {
+      const gid = q.alternativeGroupId;
+      if (!altGroups[gid]) altGroups[gid] = [];
+      altGroups[gid].push(q);
+    }
+  });
+
+  const finalExcludedQIds = new Set(preExcludedQIds);
+
+  Object.entries(altGroups).forEach(([gid, groupQuestions]) => {
+    const gradedInGroup = groupQuestions.filter(q => gradedMap.has(q.id));
+    if (gradedInGroup.length > 1) {
+      // Both sides were attempted and graded. Keep the higher scoring one.
+      gradedInGroup.sort((a, b) => {
+        const scoreA = gradedMap.get(a.id)?.marks || 0;
+        const scoreB = gradedMap.get(b.id)?.marks || 0;
+        return scoreB - scoreA;
+      });
+      // Top scorer stays active; rest excluded
+      for (let i = 1; i < gradedInGroup.length; i++) {
+        finalExcludedQIds.add(gradedInGroup[i].id);
+      }
+    }
+  });
+
+  const processedQuestions = questions.map(q => ({
+    ...q,
+    isExcludedAlternative: finalExcludedQIds.has(q.id)
+  }));
+
+  const processedAnswers = gradedAnswers.map(g => {
+    const qId = g.questionId || g.id?.replace(/^ans_/, '');
+    const isExcluded = finalExcludedQIds.has(qId);
+    return {
+      ...g,
+      status: isExcluded ? 'excluded_alternative' : (g.status || 'matched'),
+      isExcludedAlternative: isExcluded
+    };
+  });
+
+  const activeQuestions = processedQuestions.filter(q => !q.isExcludedAlternative);
+  const activeAnswers = processedAnswers.filter(a => !a.isExcludedAlternative);
+
+  const totalMaxMarks = activeQuestions.reduce((sum, q) => sum + (Number(q.maxMarks) || 0), 0);
+  const totalMarksObtained = activeAnswers.reduce((sum, a) => sum + (Number(a.marks) || 0), 0);
+  const percentage = totalMaxMarks > 0 ? Number(((totalMarksObtained / totalMaxMarks) * 100).toFixed(1)) : 0;
+
+  const answeredQIds = new Set(activeAnswers.map(a => a.questionId || a.id?.replace(/^ans_/, '')));
+  const attemptedCount = activeQuestions.filter(q => answeredQIds.has(q.id)).length;
+  const totalQuestions = activeQuestions.length;
+  const unansweredCount = totalQuestions - attemptedCount;
+  const unanswered = activeQuestions.filter(q => !answeredQIds.has(q.id)).map(q => q.id);
+
+  // Clean weakAreas from LLM summary: filter out any reference to excluded alternative questions
+  const weakAreas = (gradingResult.summary?.weakAreas || []).filter(weak => {
+    return !processedQuestions.some(q => q.isExcludedAlternative && (
+      weak.toLowerCase().includes(`q${q.qNo}${q.subPart || ''}`.toLowerCase()) ||
+      weak.toLowerCase().includes(`sub-question ${q.qNo}`.toLowerCase()) ||
+      weak.toLowerCase().includes(`question ${q.qNo}${q.subPart || ''}`.toLowerCase()) ||
+      weak.toLowerCase().includes(`18(b)`) || weak.toLowerCase().includes(`20(b)`) || weak.toLowerCase().includes(`21(b)`)
+    ));
+  });
+
+  const summary = {
+    totalMarksObtained,
+    totalMaxMarks,
+    percentage,
+    attemptedCount,
+    totalQuestions,
+    unansweredCount,
+    unmatchedCount: gradingResult.summary?.unmatchedCount || 0,
+    strengths: gradingResult.summary?.strengths || [],
+    weakAreas,
+    overallTeacherNote: gradingResult.summary?.overallTeacherNote || 'Assessment evaluation complete.'
+  };
+
+  return {
+    questions: processedQuestions,
+    answers: processedAnswers,
+    unanswered,
+    summary
+  };
+}
+
 
 // ─── Stage 1: Extract Questions ──────────────────────────────────────────
 
@@ -107,25 +303,38 @@ async function extractQuestions(qpImages) {
 
 Extract EVERY question in the exact order they appear. For questions with sub-parts (like 11a, 11b), create a separate entry for each sub-part.
 
+CRITICAL: DETECT "OR" ALTERNATIVE CHOICE QUESTIONS
+Look carefully for the word "OR" or "Or" appearing as a standalone label separating two sub-options under the same question number (e.g. between 18(a) and 18(b), 20(a) and 20(b), 21(a) and 21(b)).
+When an "OR" structure is present between sub-parts under the same main question number:
+1. Mark both sub-options with "isAlternativeGroup": true.
+2. Set "alternativeGroupId" to the main question number string (e.g., "18", "20", "21").
+3. Set "alternativeOption" to "a" or "b" (or the sub-part identifier).
+
 Return ONLY a valid JSON array. Each element must have this exact schema:
 [
   {
-    "id": "q1",
-    "qNo": "1",
-    "subPart": null,
+    "id": "q18_a",
+    "qNo": "18",
+    "subPart": "a.",
     "text": "Full exact question text as printed on the paper",
     "maxMarks": 5,
-    "page": 1
+    "page": 1,
+    "isAlternativeGroup": true,
+    "alternativeGroupId": "18",
+    "alternativeOption": "a"
   }
 ]
 
 Rules:
-- "id" must be unique: "q1", "q2", "q3"... For sub-parts: "q11_a", "q11_b".
-- "qNo" is the printed question number as a string.
+- "id" must be unique: "q1", "q2", "q3"... For sub-parts: "q11_a", "q11_b", "q18_a", "q18_b".
+- "qNo" is the printed question number as a string (e.g. "18").
 - "subPart" is null if no sub-part, otherwise "a.", "b.", etc.
 - "text" must be the COMPLETE question text exactly as printed. Do NOT truncate.
 - "maxMarks" from the paper if visible. If not visible, estimate.
 - "page" is which image (1-indexed) the question appears on.
+- "isAlternativeGroup": true if this question is part of an OR choice pair under the same main question number, false otherwise.
+- "alternativeGroupId": string matching the parent question number (e.g. "18") if part of an OR choice pair, otherwise null.
+- "alternativeOption": "a", "b", etc. if part of an OR choice pair, otherwise null.
 
 Return ONLY the JSON array. No explanation, no markdown fences.`;
 
@@ -140,7 +349,7 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
     throw new Error('Stage 1 failed: no questions extracted from response');
   }
 
-  return questions;
+  return detectAndTagAlternativeGroups(questions);
 }
 
 
@@ -230,6 +439,11 @@ Do NOT give full marks simply because an answer was written — award marks base
 - A vague, incomplete, or partially incorrect answer MUST receive partial marks.
 - A wrong, incorrect, or irrelevant answer MUST receive ZERO marks (0), even if text is written.
 - Only a complete, factually accurate answer covering all key points receives full marks.
+
+IMPORTANT NOTE ON CHOICE / OR QUESTIONS:
+Alternative choice questions (OR questions) have already been resolved to required questions only.
+Evaluate ONLY the questions provided in the input payload.
+Do NOT list unattempted alternative choices as missing answers, unanswered sub-questions, or weak areas in your summary or teacher note.
 
 STRUCTURED EVALUATION RUBRIC BY QUESTION TYPE:
 1. Short-Answer / Definition Questions:
@@ -336,7 +550,8 @@ export async function POST(request) {
       try {
         // Stage 1: Extract structured question data from the question paper
         send({ type: 'progress', stage: 1, text: 'Extracting questions from question paper...' });
-        const questions = await extractQuestions(qpImages);
+        const rawQuestions = await extractQuestions(qpImages);
+        const questions = detectAndTagAlternativeGroups(rawQuestions);
         send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
 
         // Stage 2: Read handwritten answers and estimate bounding boxes
@@ -344,13 +559,24 @@ export async function POST(request) {
         const rawAnswers = await extractAnswers(asImages, questions);
         send({ type: 'progress', stage: 2, text: `Extracted ${rawAnswers.length} answers` });
 
-        // Stage 3: Grade each answer against its question with detailed feedback
+        // Stage 3: Resolve alternative choice selections & grade
         send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
-        const gradingResult = await gradeAndMap(questions, rawAnswers);
+        const preExcludedQIds = resolveAlternativeGroupSelections(questions, rawAnswers);
+        const activeQuestionsForGrading = questions.filter(q => !preExcludedQIds.has(q.id));
+        const activeAnswersForGrading = rawAnswers.filter(a => !preExcludedQIds.has(a.questionId));
+
+        const rawGradingResult = await gradeAndMap(activeQuestionsForGrading, activeAnswersForGrading);
+
+        const {
+          questions: finalQuestions,
+          answers: finalAnswers,
+          unanswered: finalUnanswered,
+          summary: finalSummary
+        } = finalizeGradingAndSummary(questions, rawAnswers, rawGradingResult, preExcludedQIds);
 
         // Merge grading verdicts with spatial bbox data from Stage 2
         // so the answer viewer can highlight the correct region on the sheet
-        const mergedAnswers = gradingResult.gradedAnswers.map((graded) => {
+        const mergedAnswers = finalAnswers.map((graded) => {
           const rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
           return {
             ...graded,
@@ -360,18 +586,15 @@ export async function POST(request) {
           };
         });
 
-        const answeredQIds = new Set(mergedAnswers.map(a => a.questionId));
-        const unansweredIds = gradingResult.unanswered || questions.filter(q => !answeredQIds.has(q.id)).map(q => q.id);
-
         send({ type: 'progress', stage: 4, text: 'Assessment complete!' });
 
         send({
           type: 'result',
           data: {
-            questions,
+            questions: finalQuestions,
             answers: mergedAnswers,
-            unanswered: unansweredIds,
-            summary: gradingResult.summary,
+            unanswered: finalUnanswered,
+            summary: finalSummary,
           },
         });
 
@@ -392,3 +615,4 @@ export async function POST(request) {
     },
   });
 }
+

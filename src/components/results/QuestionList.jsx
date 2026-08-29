@@ -69,7 +69,10 @@ export default function QuestionList({
           let badgeBg = 'bg-emerald-50 text-emerald-600 font-bold';
           let scoreText = `${q.maxMarks}/${q.maxMarks}`;
 
-          if (ans) {
+          if (q.isExcludedAlternative) {
+            badgeBg = 'bg-slate-100 text-slate-500 font-bold border border-slate-200';
+            scoreText = 'OR Choice (Not Selected)';
+          } else if (ans) {
             scoreText = `${ans.marks}/${ans.maxMarks}`;
             if (ans.marks === ans.maxMarks || (ans.marks / ans.maxMarks) >= 0.8) {
               badgeBg = 'bg-[#DCFCE7] text-[#15803D] font-extrabold'; // Green
@@ -87,6 +90,8 @@ export default function QuestionList({
               className={`rounded-2xl p-4 transition-all duration-200 cursor-pointer border ${
                 isSelected
                   ? 'bg-white border-2 border-[#F0653C] shadow-md'
+                  : q.isExcludedAlternative
+                  ? 'bg-slate-50/60 border border-slate-200/60 opacity-75'
                   : 'bg-white border border-slate-200/90 hover:border-slate-300'
               }`}
             >
@@ -101,6 +106,11 @@ export default function QuestionList({
                     {q.subPart && (
                       <span className="text-xs font-black text-slate-800 ml-0.5">
                         {q.subPart}
+                      </span>
+                    )}
+                    {q.isAlternativeGroup && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 ml-1">
+                        OR
                       </span>
                     )}
                   </div>
