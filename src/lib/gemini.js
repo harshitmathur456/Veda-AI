@@ -6,6 +6,8 @@
  * The Gemini SDK runs ONLY on the server — never in the browser.
  */
 
+const PIPELINE_TIMEOUT_MS = 90_000; // 90 seconds
+
 /**
  * Process Question Paper & Answer Sheet via the server-side Gemini pipeline.
  * @param {Array<{page: number, base64: string}>} qpImages
@@ -21,11 +23,19 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
   console.log('[Client Pipeline] Starting assessment processing for QP pages:', qpImages.length, '| AS pages:', asImages.length);
   onProgressCallback({ stage: 1, text: 'Sending files to AI engine...' });
 
+  // Enforce a hard timeout so the UI never hangs indefinitely
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.error(`[Client Pipeline] Timeout after ${PIPELINE_TIMEOUT_MS / 1000}s — aborting request`);
+    controller.abort();
+  }, PIPELINE_TIMEOUT_MS);
+
   try {
     const response = await fetch('/api/process-assessment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ qpImages, asImages }),
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -62,7 +72,7 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
           }
         } catch (parseErr) {
           // Re-throw actual pipeline errors; ignore NDJSON parse issues
-          if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage') || parseErr.message?.includes('failed')) {
+          if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage') || parseErr.message?.includes('failed') || parseErr.message?.includes('All Gemini')) {
             throw parseErr;
           }
         }
@@ -82,6 +92,14 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
     return finalResult;
 
   } catch (err) {
+    // Map AbortError to a user-friendly timeout message
+    if (err.name === 'AbortError') {
+      const timeoutMsg = `Request timed out after ${PIPELINE_TIMEOUT_MS / 1000} seconds. The AI server may be overloaded — please retry.`;
+      console.error('[Client Pipeline] AbortError (timeout):', timeoutMsg);
+      onProgressCallback({ stage: 0, text: `Pipeline Error: ${timeoutMsg}` });
+      throw new Error(timeoutMsg);
+    }
+
     const isFetchErr = err.message?.includes('Failed to fetch') || err.name === 'TypeError';
     const friendlyErrMsg = isFetchErr
       ? 'Connection failed (server offline or network error)'
@@ -95,5 +113,7 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
     });
 
     throw new Error(friendlyErrMsg);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

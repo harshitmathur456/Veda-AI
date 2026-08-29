@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import UploadView from '@/components/upload/UploadView';
 import ProcessingView from '@/components/processing/ProcessingView';
@@ -18,6 +18,10 @@ export default function ExamsPage() {
   const [sampleError, setSampleError] = useState(null);
 
   const [processingStatus, setProcessingStatus] = useState({ stage: 1, text: 'Starting pipeline...' });
+  const [pipelineError, setPipelineError] = useState(null);
+
+  // Cache converted images so retry doesn't re-rasterize
+  const cachedImagesRef = useRef({ qpImages: null, asImages: null });
 
   const [assessmentData, setAssessmentData] = useState({
     questions: [],
@@ -27,7 +31,7 @@ export default function ExamsPage() {
     asImages: []
   });
 
-  const executeMappingFlow = async (targetQp, targetAs) => {
+  const executeMappingFlow = async (targetQp, targetAs, useCache = false) => {
     if (!targetQp || !targetAs) return;
 
     console.log('[ExamsPage] Processing Upload Files:', {
@@ -38,20 +42,34 @@ export default function ExamsPage() {
     });
 
     setViewStep('processing');
+    setPipelineError(null);
 
     try {
-      // Step 1: Convert uploaded files to page images for the Gemini vision pipeline
-      setProcessingStatus({ stage: 1, text: 'Rasterizing PDF / Image pages...' });
-      const qpImages = await convertFileToImages(targetQp);
-      const asImages = await convertFileToImages(targetAs);
+      let qpImages, asImages;
 
-      console.log('[ExamsPage] Converted file pages to images:', {
-        qpPageImagesCount: qpImages.length,
-        asPageImagesCount: asImages.length,
-      });
+      if (useCache && cachedImagesRef.current.qpImages && cachedImagesRef.current.asImages) {
+        // On retry, reuse already-rasterized images
+        console.log('[ExamsPage] Using cached page images for retry');
+        qpImages = cachedImagesRef.current.qpImages;
+        asImages = cachedImagesRef.current.asImages;
+        setProcessingStatus({ stage: 1, text: 'Using cached page images...' });
+      } else {
+        // Step 1: Convert uploaded files to page images for the Gemini vision pipeline
+        setProcessingStatus({ stage: 1, text: 'Rasterizing PDF / Image pages...' });
+        qpImages = await convertFileToImages(targetQp);
+        asImages = await convertFileToImages(targetAs);
 
-      if (!qpImages.length || !asImages.length) {
-        throw new Error('File page conversion failed — could not generate images from uploaded files.');
+        console.log('[ExamsPage] Converted file pages to images:', {
+          qpPageImagesCount: qpImages.length,
+          asPageImagesCount: asImages.length,
+        });
+
+        if (!qpImages.length || !asImages.length) {
+          throw new Error('File page conversion failed — could not generate images from uploaded files.');
+        }
+
+        // Cache for potential retry
+        cachedImagesRef.current = { qpImages, asImages };
       }
 
       // Step 2: Send page images through the 3-stage Gemini pipeline (extract → map → grade)
@@ -79,16 +97,20 @@ export default function ExamsPage() {
       setViewStep('results');
     } catch (error) {
       console.error('[ExamsPage] Pipeline processing failed:', error);
-      setProcessingStatus({
-        stage: 0,
-        text: `Evaluation Failed: ${error.message || 'Unknown pipeline error'}. Please retry uploading.`,
-      });
-      setSampleError(`Evaluation failed: ${error.message || 'Unknown pipeline error'}. Please verify files and try again.`);
+
+      const errorMessage = error.message || 'Unknown pipeline error';
+      setPipelineError(`${errorMessage}. Please retry or upload different files.`);
+      // Stay on 'processing' view — ProcessingView will render the error card
     }
   };
 
   const handleStartMapping = () => {
     executeMappingFlow(qpFile, asFile);
+  };
+
+  const handleRetryPipeline = () => {
+    console.log('[ExamsPage] Retrying pipeline with same files...');
+    executeMappingFlow(qpFile, asFile, true /* useCache */);
   };
 
   const handleLoadSampleData = async () => {
@@ -129,6 +151,8 @@ export default function ExamsPage() {
     setQpFile(null);
     setAsFile(null);
     setSampleError(null);
+    setPipelineError(null);
+    cachedImagesRef.current = { qpImages: null, asImages: null };
     setViewStep('upload');
   };
 
@@ -151,6 +175,9 @@ export default function ExamsPage() {
       {viewStep === 'processing' && (
         <ProcessingView
           progress={processingStatus}
+          error={pipelineError}
+          onRetry={handleRetryPipeline}
+          onNewUpload={handleResetUpload}
         />
       )}
 

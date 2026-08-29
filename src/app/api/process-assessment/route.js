@@ -12,21 +12,49 @@ const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-1.5-flash', 'gemini-2.0-fla
  * This fallback chain handles model availability changes and rate limits
  * without requiring manual config updates.
  */
-async function callGeminiVision(contents) {
+async function callGeminiVision(contents, stageName = 'unknown') {
+  // Estimate payload size for diagnostics
+  const payloadEstimate = JSON.stringify(contents).length;
+  console.log(`[API][${stageName}] Payload estimate: ${(payloadEstimate / 1024 / 1024).toFixed(2)} MB`);
+
   let lastError;
-  for (const modelName of [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)]) {
+  const modelsToTry = [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)];
+
+  for (const modelName of modelsToTry) {
+    const startTime = Date.now();
     try {
+      console.log(`[API][${stageName}] Calling model: ${modelName}`);
+
       const response = await ai.models.generateContent({
         model: modelName,
         contents,
       });
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[API][${stageName}] Model ${modelName} responded in ${elapsed}s, has text: ${!!response?.text}`);
+
       if (response && response.text) {
         return response;
       }
+
+      console.warn(`[API][${stageName}] Model ${modelName} returned empty text, trying next...`);
     } catch (err) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const status = err.status || err.statusCode || err.httpStatusCode || 'N/A';
+      const code = err.code || 'N/A';
+      console.error(`[API][${stageName}] Model ${modelName} FAILED after ${elapsed}s:`, {
+        status,
+        code,
+        message: err.message,
+        name: err.name,
+        details: err.details || err.errorDetails || undefined,
+      });
       lastError = err;
     }
   }
+
+  const finalStatus = lastError?.status || lastError?.statusCode || 'N/A';
+  console.error(`[API][${stageName}] ALL models failed. Last error status: ${finalStatus}, message: ${lastError?.message}`);
   throw lastError || new Error('All Gemini models failed');
 }
 
@@ -398,7 +426,7 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
 
   const response = await callGeminiVision([
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
-  ]);
+  ], 'Stage1-ExtractQuestions');
 
   const questions = extractJSON(response.text);
   if (!Array.isArray(questions) || questions.length === 0) {
@@ -462,7 +490,7 @@ Return ONLY the JSON array.`;
 
   const response = await callGeminiVision([
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
-  ]);
+  ], 'Stage2-ExtractAnswers');
 
   const answers = extractJSON(response.text);
   if (!Array.isArray(answers) || answers.length === 0) {
@@ -556,7 +584,7 @@ Return ONLY the JSON object. No extra text or markdown.`;
 
   const response = await callGeminiVision([
     { role: 'user', parts: [{ text: prompt }] }
-  ]);
+  ], 'Stage3-GradeAndMap');
 
   const result = extractJSON(response.text);
   if (!result || !result.gradedAnswers) {
