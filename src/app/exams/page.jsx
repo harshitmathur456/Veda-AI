@@ -105,7 +105,7 @@ export default function ExamsPage() {
       const isQuota = msg.includes('429') || msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('rate limit') || msg.includes('too many tokens') || msg.includes('too many requests');
 
       if (isQuota) {
-        setPipelineError('too many requests try again later');
+        setPipelineError('Too many tokens used. Try again later.');
       } else {
         const errorMessage = error.message || 'Unknown pipeline error';
         setPipelineError(`${errorMessage}. Please retry or upload different files.`);

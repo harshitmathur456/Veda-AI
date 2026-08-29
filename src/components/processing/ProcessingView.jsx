@@ -8,6 +8,7 @@ export default function ProcessingView({
   onRetry = null,
   onNewUpload = null,
 }) {
+  const hasError = !!error;
   const errStr = String(error || '').toLowerCase();
   const isQuotaError =
     errStr.includes('429') ||
@@ -20,7 +21,7 @@ export default function ProcessingView({
     errStr.includes('generativelanguage') ||
     errStr.includes('free_tier');
 
-  const displayError = isQuotaError ? 'too many requests try again later' : error;
+  const displayError = isQuotaError ? 'Too many tokens used. Try again later.' : error;
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center p-6 bg-slate-100">
