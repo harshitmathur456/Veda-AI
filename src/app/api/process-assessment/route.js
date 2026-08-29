@@ -26,6 +26,7 @@ function getAIClients() {
 }
 
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const QUOTA_ERROR_MESSAGE = 'Too many tokens used. Try again later.';
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
 const exhaustedKeyTimestamps = new Map();
@@ -894,7 +895,8 @@ export async function POST(request) {
       } catch (err) {
         console.error('[API] Pipeline error:', err);
         const isQuota = isQuotaOrRateLimitError(err);
-        const errorMsg = isQuota ? 'Too many tokens used. Try again later.' : (err.message || 'Unknown pipeline error');
+        // Do not expose Gemini's detailed quota payload to the evaluation card.
+        const errorMsg = isQuota ? QUOTA_ERROR_MESSAGE : (err.message || 'Unknown pipeline error');
         send({ type: 'error', error: errorMsg });
       }
 
@@ -910,4 +912,3 @@ export async function POST(request) {
     },
   });
 }
-
