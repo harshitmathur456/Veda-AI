@@ -2,9 +2,9 @@ import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { computeHighlightRegion, cleanTextForMatch, isLineMatch } from '../../../lib/highlightUtils';
 
-// ─── Server-side only — Multi-key setup prioritizing GEMINI_API_KEY_2 ─────────
+// ─── Server-side only — Multi-key setup targeting identical model & config ─────
 function getAIClients() {
-  const preferredOrder = [2, 3, 4, 1];
+  const preferredOrder = [1, 2, 3, 4];
   const clients = [];
 
   for (const i of preferredOrder) {
@@ -26,7 +26,6 @@ function getAIClients() {
 }
 
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'];
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
 const exhaustedKeyTimestamps = new Map();
@@ -67,15 +66,11 @@ function isQuotaOrRateLimitError(err) {
 }
 
 /**
- * Call Gemini with multi-key + multi-model fallback.
- *
+ * Call Gemini using API key rotation with identical request parameters.
  * Strategy:
- *  - Filter out recently exhausted keys first.
- *  - For each API key, try each model in sequence.
- *  - If a call fails with a quota/rate-limit error, remember the key as exhausted and move to the next key.
- *  - If a call fails with a non-quota error (network, malformed, etc.),
- *    try the next model under the SAME key, then move to the next key.
- *  - Only surface the final error if ALL keys × models are exhausted.
+ *  - Standardized target model: gemini-3.5-flash across all keys.
+ *  - Identical request payload, prompt, and parameters.
+ *  - If Key 1 hits a 429 rate limit, try Key 2 -> Key 3 -> Key 4.
  */
 async function callGeminiVision(contents, stageName = 'unknown') {
   const aiClients = getAIClients();
@@ -83,77 +78,65 @@ async function callGeminiVision(contents, stageName = 'unknown') {
     throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4 in .env.local');
   }
 
-  // Estimate payload size for diagnostics
   const payloadEstimate = JSON.stringify(contents).length;
   console.log(`[API][${stageName}] Payload estimate: ${(payloadEstimate / 1024 / 1024).toFixed(2)} MB`);
 
-  const modelsToTry = [
-    MODEL_ID,
-    ...['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash'].filter(m => m !== MODEL_ID)
-  ];
-  
   let lastError = null;
 
-  // Outer loop: Try models in priority order (starting with gemini-3.5-flash)
-  for (const modelName of modelsToTry) {
-    // Inner loop: Try all available API keys for this model
-    for (const { label: keyLabel, client: aiClient } of aiClients) {
-      const keyModelTag = `${keyLabel}:${modelName}`;
-      if (isKeyRecentlyExhausted(keyModelTag)) {
-        continue;
+  // Filter out keys marked exhausted within 60s
+  const availableClients = aiClients.filter(c => !isKeyRecentlyExhausted(c.label));
+  const clientsToTry = availableClients.length > 0 ? availableClients : aiClients;
+
+  for (const { label: keyLabel, client: aiClient } of clientsToTry) {
+    const startTime = Date.now();
+    try {
+      console.log(`[API][${stageName}] Trying ${keyLabel} with model ${MODEL_ID}`);
+
+      const response = await aiClient.models.generateContent({
+        model: MODEL_ID,
+        contents,
+      });
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[API][${stageName}] ✓ ${keyLabel} responded in ${elapsed}s`);
+
+      if (response && response.text) {
+        return response;
       }
 
-      const startTime = Date.now();
-      try {
-        console.log(`[API][${stageName}] Trying model: ${modelName} on ${keyLabel}`);
+      console.warn(`[API][${stageName}] ${keyLabel} returned empty text, trying next key...`);
+    } catch (err) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const status = err.status || err.statusCode || err.httpStatusCode || 'N/A';
+      console.error(`[API][${stageName}] ✗ ${keyLabel} FAILED after ${elapsed}s (status ${status}): ${err.message}`);
+      lastError = err;
 
-        const response = await aiClient.models.generateContent({
-          model: modelName,
-          contents,
-        });
-
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`[API][${stageName}] ✓ ${modelName} on ${keyLabel} responded in ${elapsed}s, has text: ${!!response?.text}`);
-
-        if (response && response.text) {
-          return response;
-        }
-
-        console.warn(`[API][${stageName}] ${modelName} on ${keyLabel} returned empty text, trying next key/model...`);
-      } catch (err) {
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const status = err.status || err.statusCode || err.httpStatusCode || 'N/A';
-        console.error(`[API][${stageName}] ✗ ${modelName} on ${keyLabel} FAILED after ${elapsed}s (status ${status}): ${err.message}`);
-        lastError = err;
-
-        if (isQuotaOrRateLimitError(err)) {
-          markKeyAsExhausted(keyModelTag);
-        }
+      if (isQuotaOrRateLimitError(err)) {
+        console.warn(`[API][${stageName}] ${keyLabel} hit rate limit — remembering as exhausted and rotating to next key`);
+        markKeyAsExhausted(keyLabel);
       }
     }
   }
 
-  // Emergency fallback sweep: If all 60s cooldown checks filtered out keys, do a final brute-force pass across ALL keys and models ignoring cooldowns
-  console.warn(`[API][${stageName}] Standard key pool exhausted, conducting emergency brute-force sweep...`);
-  for (const modelName of modelsToTry) {
-    for (const { label: keyLabel, client: aiClient } of aiClients) {
-      try {
-        const response = await aiClient.models.generateContent({
-          model: modelName,
-          contents,
-        });
-        if (response && response.text) {
-          return response;
-        }
-      } catch (err) {
-        lastError = err;
+  // Emergency sweep: If all 60s cooldown checks filtered out keys, do a final sweep over all keys ignoring cooldowns
+  console.warn(`[API][${stageName}] All un-flagged keys exhausted, performing final sweep over key pool...`);
+  for (const { label: keyLabel, client: aiClient } of aiClients) {
+    try {
+      const response = await aiClient.models.generateContent({
+        model: MODEL_ID,
+        contents,
+      });
+      if (response && response.text) {
+        return response;
       }
+    } catch (err) {
+      lastError = err;
     }
   }
 
   const finalStatus = lastError?.status || lastError?.statusCode || 'N/A';
-  console.error(`[API][${stageName}] ALL keys × models exhausted. Last error status: ${finalStatus}, message: ${lastError?.message}`);
-  throw lastError || new Error('All Gemini API keys and models failed');
+  console.error(`[API][${stageName}] ALL keys exhausted for model ${MODEL_ID}. Last error status: ${finalStatus}, message: ${lastError?.message}`);
+  throw lastError || new Error(`All Gemini API keys failed for model ${MODEL_ID}`);
 }
 
 export const maxDuration = 300; // 5 minutes for long vision extractions
