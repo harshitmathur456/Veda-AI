@@ -222,15 +222,53 @@ function buildImageParts(pageImages) {
   });
 }
 
+function normalizeBbox(rawBbox) {
+  if (!rawBbox || typeof rawBbox !== 'object') {
+    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+  }
+
+  let ymin = Number(rawBbox.ymin ?? rawBbox.y1 ?? rawBbox.top ?? 0);
+  let xmin = Number(rawBbox.xmin ?? rawBbox.x1 ?? rawBbox.left ?? 0);
+  let ymax = Number(rawBbox.ymax ?? rawBbox.y2 ?? rawBbox.bottom ?? 0);
+  let xmax = Number(rawBbox.xmax ?? rawBbox.x2 ?? rawBbox.right ?? 0);
+
+  if (ymax === 0 && xmax === 0) {
+    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+  }
+
+  // Detect 0.0 - 1.0 normalized range
+  if (ymax <= 1.0 && xmax <= 1.0 && (ymax > 0 || xmax > 0)) {
+    ymin *= 100;
+    xmin *= 100;
+    ymax *= 100;
+    xmax *= 100;
+  } else if (ymax > 100 || xmax > 100) {
+    ymin = (ymin / 1000) * 100;
+    xmin = (xmin / 1000) * 100;
+    ymax = (ymax / 1000) * 100;
+    xmax = (xmax / 1000) * 100;
+  }
+
+  ymin = Math.max(0, Math.min(ymin, 95));
+  xmin = Math.max(0, Math.min(xmin, 90));
+  ymax = Math.max(ymin + 4, Math.min(ymax, 100));
+  xmax = Math.max(xmin + 10, Math.min(xmax, 100));
+
+  return { ymin, xmin, ymax, xmax };
+}
+
 /**
  * Post-process: trim bounding boxes so consecutive answers on the same page
- * don't overlap. If bbox[i].ymax > bbox[i+1].ymin, clamp it down.
- * This prevents the answer viewer from showing overlapping highlight regions
- * when Gemini's bbox estimates are slightly too generous.
+ * don't overlap.
  */
 function trimOverlappingBboxes(answers) {
+  const normalizedAnswers = answers.map(a => ({
+    ...a,
+    bbox: normalizeBbox(a.bbox)
+  }));
+
   const byPage = {};
-  answers.forEach(a => {
+  normalizedAnswers.forEach(a => {
     const p = a.page || 1;
     if (!byPage[p]) byPage[p] = [];
     byPage[p].push(a);
@@ -244,12 +282,12 @@ function trimOverlappingBboxes(answers) {
       if (curr.bbox && next.bbox && curr.bbox.ymax > next.bbox.ymin) {
         // Leave a 1% gap between consecutive answer regions
         const gap = 1;
-        curr.bbox.ymax = Math.max(curr.bbox.ymin + 2, next.bbox.ymin - gap);
+        curr.bbox.ymax = Math.max(curr.bbox.ymin + 4, next.bbox.ymin - gap);
       }
     }
   });
 
-  return answers;
+  return normalizedAnswers;
 }
 
 /**

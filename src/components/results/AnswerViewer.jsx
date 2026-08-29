@@ -1,7 +1,158 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2 } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2, FileQuestion } from 'lucide-react';
+
+/**
+ * Normalizes bounding box coordinates from any AI output scale
+ * (normalized 0.0-1.0, 0-100 percentage, or 0-1000 integer scale)
+ * into a consistent 0-100 percentage format.
+ */
+function normalizeBbox(rawBbox) {
+  if (!rawBbox || typeof rawBbox !== 'object') {
+    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+  }
+
+  let ymin = Number(rawBbox.ymin ?? rawBbox.y1 ?? rawBbox.top ?? 0);
+  let xmin = Number(rawBbox.xmin ?? rawBbox.x1 ?? rawBbox.left ?? 0);
+  let ymax = Number(rawBbox.ymax ?? rawBbox.y2 ?? rawBbox.bottom ?? 0);
+  let xmax = Number(rawBbox.xmax ?? rawBbox.x2 ?? rawBbox.right ?? 0);
+
+  // If bbox is empty/unspecified, provide a reasonable fallback
+  if (ymax === 0 && xmax === 0) {
+    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+  }
+
+  // Detect 0.0 - 1.0 normalized range (e.g., ymin: 0.12, ymax: 0.28)
+  if (ymax <= 1.0 && xmax <= 1.0 && (ymax > 0 || xmax > 0)) {
+    ymin *= 100;
+    xmin *= 100;
+    ymax *= 100;
+    xmax *= 100;
+  }
+  // Detect 0 - 1000 range (e.g., ymin: 120, ymax: 280)
+  else if (ymax > 100 || xmax > 100) {
+    ymin = (ymin / 1000) * 100;
+    xmin = (xmin / 1000) * 100;
+    ymax = (ymax / 1000) * 100;
+    xmax = (xmax / 1000) * 100;
+  }
+
+  // Ensure valid rectangular boundaries
+  ymin = Math.max(0, Math.min(ymin, 95));
+  xmin = Math.max(0, Math.min(xmin, 90));
+  ymax = Math.max(ymin + 4, Math.min(ymax, 100)); // at least 4% height
+  xmax = Math.max(xmin + 10, Math.min(xmax, 100)); // at least 10% width
+
+  return { ymin, xmin, ymax, xmax };
+}
+
+/**
+ * Renders an answer sheet page either as an image or by rendering a raw PDF to canvas.
+ */
+function AnswerPageImage({ pageData, pageNumber }) {
+  const [pdfRenderedUrl, setPdfRenderedUrl] = useState(null);
+  const [loadError, setLoadError] = useState(false);
+  const canvasRef = useRef(null);
+
+  const rawBase64 = pageData?.base64 || '';
+  const isPdfDataUrl = rawBase64.startsWith('data:application/pdf');
+  const isImageDataUrl = rawBase64.startsWith('data:image/');
+
+  useEffect(() => {
+    // If the data is a raw PDF URL, dynamically render it to canvas using pdfjs-dist
+    if (isPdfDataUrl && typeof window !== 'undefined') {
+      let isCancelled = false;
+
+      async function renderPdfPage() {
+        try {
+          const pdfjsLib = await import('pdfjs-dist');
+          const version = pdfjsLib.version || '4.10.38';
+          if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+          }
+
+          const base64Data = rawBase64.replace(/^data:application\/pdf;base64,/, '');
+          const binaryStr = window.atob(base64Data);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+
+          const pdf = await pdfjsLib.getDocument({ data: bytes, useSystemFonts: true }).promise;
+          const targetPage = Math.min(pageNumber, pdf.numPages);
+          const page = await pdf.getPage(targetPage);
+          const viewport = page.getViewport({ scale: 2.0 });
+
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext('2d');
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          if (!isCancelled) {
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            setPdfRenderedUrl(dataUrl);
+          }
+        } catch (e) {
+          console.error('[AnswerViewer] PDF-to-canvas rendering failed:', e);
+          if (!isCancelled) setLoadError(true);
+        }
+      }
+
+      renderPdfPage();
+      return () => { isCancelled = true; };
+    }
+  }, [rawBase64, isPdfDataUrl, pageNumber]);
+
+  const activeSrc = isImageDataUrl ? rawBase64 : pdfRenderedUrl;
+
+  if (activeSrc && !loadError) {
+    return (
+      <img
+        src={activeSrc}
+        alt={`Answer Sheet Page ${pageNumber}`}
+        className="w-full h-auto block select-none pointer-events-none"
+        onLoad={(e) => {
+          console.log(`[AnswerViewer] Page ${pageNumber} image loaded:`, e.target.naturalWidth, 'x', e.target.naturalHeight);
+        }}
+        onError={(e) => {
+          console.error(`[AnswerViewer] Page ${pageNumber} image failed to load:`, e);
+          setLoadError(true);
+        }}
+      />
+    );
+  }
+
+  // Fallback: Styled Ruled Notebook Sheet
+  return (
+    <div className="w-full h-full min-h-[860px] bg-[#FAF8F5] relative p-8 select-none">
+      {/* Double Red Left Margin Line */}
+      <div className="absolute top-0 bottom-0 left-10 w-[1px] bg-rose-300 z-0"></div>
+      <div className="absolute top-0 bottom-0 left-11 w-[1px] bg-rose-300 z-0"></div>
+
+      {/* Ruled Horizontal Lines */}
+      <div 
+        className="absolute inset-0 z-0 pointer-events-none" 
+        style={{
+          backgroundImage: 'linear-gradient(to bottom, transparent 31px, #CBD5E1 32px)',
+          backgroundSize: '100% 32px'
+        }}
+      ></div>
+
+      <div className="relative z-10 pl-6 pr-4 pt-2 font-serif text-slate-800 text-sm leading-[32px]">
+        <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+          <FileQuestion className="w-10 h-10 mb-2 opacity-50" />
+          <p className="font-sans text-xs font-bold text-slate-500">Page {pageNumber} Content</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function AnswerViewer({
   answers = [],
@@ -15,13 +166,13 @@ export default function AnswerViewer({
   const containerRef = useRef(null);
   const activeBoxRef = useRef(null);
 
-  const totalPages = asImages.length > 0 ? asImages.length : 4;
+  const totalPages = asImages.length > 0 ? asImages.length : 1;
 
   const activeAnswer = answers.find(a => a.questionId === selectedQuestionId);
 
   useEffect(() => {
     if (activeAnswer) {
-      if (activeAnswer.page && activeAnswer.page !== currentPage) {
+      if (activeAnswer.page && activeAnswer.page !== currentPage && activeAnswer.page <= totalPages) {
         setCurrentPage(activeAnswer.page);
       }
 
@@ -32,22 +183,22 @@ export default function AnswerViewer({
             block: 'center'
           });
         }
-      }, 100);
+      }, 150);
     }
-  }, [selectedQuestionId, activeAnswer]);
+  }, [selectedQuestionId, activeAnswer, totalPages]);
 
-  const answersForCurrentPage = answers.filter(a => a.page === currentPage);
+  const answersForCurrentPage = answers.filter(a => (a.page || 1) === currentPage);
 
-  const getQuestionLabel = (qId) => {
+  const getQuestionLabel = useCallback((qId) => {
     const q = questions.find(item => item.id === qId);
-    if (!q) return 'Answer';
+    if (!q) return qId?.toUpperCase() || 'Ans';
     return `Q${q.qNo}${q.subPart ? q.subPart : ''}`;
-  };
+  }, [questions]);
 
   return (
     <div className="flex flex-col h-full bg-slate-800 rounded-3xl border border-slate-700/80 shadow-md overflow-hidden text-white">
       
-      {/* Header Bar matching Screenshot 2 */}
+      {/* Header Bar */}
       <div className="p-3.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
         <h3 className="font-extrabold text-xs sm:text-sm text-white pl-2">
           Answer Sheet
@@ -60,19 +211,21 @@ export default function AnswerViewer({
             <button
               onClick={() => setZoom(prev => Math.max(70, prev - 15))}
               className="text-slate-400 hover:text-white transition-colors"
+              title="Zoom Out"
             >
-              <ZoomIn className="w-3.5 h-3.5" />
+              <ZoomOut className="w-3.5 h-3.5" />
             </button>
             <span className="font-mono text-[11px] font-bold text-slate-200">{zoom}%</span>
             <button
               onClick={() => setZoom(prev => Math.min(160, prev + 15))}
               className="text-slate-400 hover:text-white transition-colors"
+              title="Zoom In"
             >
-              <ZoomOut className="w-3.5 h-3.5" />
+              <ZoomIn className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Page Navigator matching Screenshot 2 */}
+          {/* Page Navigator */}
           <div className="flex items-center gap-2 bg-slate-800 px-3 py-1 rounded-full text-xs">
             <button
               onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
@@ -109,112 +262,42 @@ export default function AnswerViewer({
             minHeight: `${Math.round(860 * (zoom / 100))}px`
           }}
         >
-          {asImages[currentPage - 1]?.base64 ? (
-            <img
-              src={asImages[currentPage - 1].base64}
-              alt={`Answer Sheet Page ${currentPage}`}
-              className="w-full h-auto block select-none pointer-events-none"
-            />
-          ) : (
-            /* Styled Ruled Notebook Sheet matching Screenshot 2 */
-            <div className="w-full h-full min-h-[860px] bg-[#FAF8F5] relative p-8 select-none">
-              
-              {/* Double Red Left Margin Line */}
-              <div className="absolute top-0 bottom-0 left-10 w-[1px] bg-rose-300 z-0"></div>
-              <div className="absolute top-0 bottom-0 left-11 w-[1px] bg-rose-300 z-0"></div>
+          {/* Answer Sheet Page Image Component */}
+          <AnswerPageImage
+            pageData={asImages[currentPage - 1]}
+            pageNumber={currentPage}
+          />
 
-              {/* Ruled Horizontal Lines */}
-              <div 
-                className="absolute inset-0 z-0 pointer-events-none" 
-                style={{
-                  backgroundImage: 'linear-gradient(to bottom, transparent 31px, #CBD5E1 32px)',
-                  backgroundSize: '100% 32px'
-                }}
-              ></div>
-
-              {/* Handwritten Blue Pen Answers & Diagram matching Screenshot 2 */}
-              <div className="relative z-10 pl-6 pr-4 pt-2 font-serif text-slate-800 text-sm leading-[32px]">
-                
-                {/* Q1 Handwritten Answer Block */}
-                <div className="mb-6">
-                  <span className="font-bold text-blue-900 text-base font-sans mr-2">Q1.</span>
-                  <span className="text-blue-900 font-serif italic text-base">
-                    Photosynthesis is the process used by green plants and some other organisms to convert light energy into chemical energy.
-                  </span>
-
-                  {/* Chemical Equation Box */}
-                  <div className="my-3 mx-auto w-11/12 border border-slate-700 py-1.5 px-4 text-center font-serif text-blue-900 text-sm font-bold bg-white/40 rounded-sm">
-                    6CO₂ + 6H₂O ───[ Light / Chlorophyll ]───❯ C₆H₁₂O₆ + 6O₂
-                  </div>
-
-                  {/* Plant Ray Diagram Graphic */}
-                  <div className="my-4 flex flex-col items-center justify-center text-blue-900 font-serif text-xs">
-                    {/* Sun */}
-                    <div className="flex items-center gap-1 mb-1 font-bold">
-                      <span>☀️ Sunlight</span>
-                    </div>
-
-                    {/* Plant Graphic */}
-                    <div className="border border-slate-400 p-4 bg-white/30 rounded-sm text-center relative w-64">
-                      <div className="flex items-center justify-between text-[11px] font-bold">
-                        <span>Carbon dioxide ──❯</span>
-                        <span>🌱</span>
-                        <span>──❯ Oxygen</span>
-                      </div>
-                      <div className="mt-4 pt-2 border-t border-dashed border-slate-400 text-center font-bold text-[11px]">
-                        🌊 Water (Roots)
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Q2 Handwritten Answer Block matching Screenshot 2 */}
-                <div className="my-8 pt-2">
-                  <span className="font-bold text-blue-900 text-base font-sans mr-2">Q2.</span>
-                  <p className="text-blue-900 font-serif italic text-base leading-[32px]">
-                    The process mainly occurs in the chloroplast of the plant cell. It has two main stages:
-                  </p>
-                  <p className="text-blue-900 font-serif italic text-base leading-[32px] pl-6">
-                    1. Light reaction – Captures light energy.
-                  </p>
-                  <p className="text-blue-900 font-serif italic text-base leading-[32px] pl-6">
-                    2. Dark reaction – Uses energy to make glucose.
-                  </p>
-                </div>
-
-              </div>
-            </div>
-          )}
-
-          {/* SVG Overlay Layer for Bounding Box Highlights matching Screenshot 2 */}
+          {/* Highlight Overlay Layer for Bounding Boxes */}
           <div className="absolute inset-0 pointer-events-none z-20">
             {answersForCurrentPage.map((ans) => {
               const isSelected = selectedQuestionId === ans.questionId;
               const label = getQuestionLabel(ans.questionId);
+              const bbox = normalizeBbox(ans.bbox);
 
-              const top = `${ans.bbox.ymin}%`;
-              const left = `${ans.bbox.xmin}%`;
-              const height = `${ans.bbox.ymax - ans.bbox.ymin}%`;
-              const width = `${ans.bbox.xmax - ans.bbox.xmin}%`;
+              const top = `${bbox.ymin}%`;
+              const left = `${bbox.xmin}%`;
+              const height = `${Math.max(4, bbox.ymax - bbox.ymin)}%`;
+              const width = `${Math.max(10, bbox.xmax - bbox.xmin)}%`;
 
               return (
                 <div
-                  key={ans.id}
+                  key={ans.id || ans.questionId}
                   ref={isSelected ? activeBoxRef : null}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (ans.questionId) onSelectAnswer(ans.questionId);
                   }}
                   style={{ top, left, height, width }}
-                  className={`absolute rounded-xl transition-all duration-300 pointer-events-auto cursor-pointer p-1.5 ${
+                  className={`absolute rounded-xl transition-all duration-200 pointer-events-auto cursor-pointer p-1.5 ${
                     isSelected
-                      ? 'border-2 border-[#22C55E] bg-[#22C55E]/10 shadow-lg ring-2 ring-[#22C55E]/20'
-                      : 'border-2 border-emerald-500/60 bg-emerald-500/5 hover:border-emerald-500'
+                      ? 'border-2 border-[#22C55E] bg-[#22C55E]/15 shadow-lg ring-2 ring-[#22C55E]/30'
+                      : 'border-2 border-emerald-500/60 bg-emerald-500/10 hover:border-emerald-500 hover:bg-emerald-500/20'
                   }`}
                 >
-                  {/* Q2 Green Tag Badge matching Screenshot 2 */}
-                  <div className="absolute -top-3 left-2">
-                    <span className="px-2.5 py-0.5 rounded-md text-xs font-black bg-[#22C55E] text-white shadow-md flex items-center gap-1">
+                  {/* Tag Badge */}
+                  <div className="absolute -top-3 left-2 z-30">
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-black bg-[#22C55E] text-white shadow-md flex items-center gap-1">
                       {label}
                       {isSelected && <CheckCircle2 className="w-3 h-3 text-white" />}
                     </span>
