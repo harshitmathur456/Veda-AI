@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
-import { computeHighlightRegion, cleanTextForMatch } from '../../../lib/highlightUtils';
+import { computeHighlightRegion, cleanTextForMatch, isLineMatch } from '../../../lib/highlightUtils';
 
 // ─── Server-side only — Prioritize GEMINI_API_KEY_1 as primary fast key ──────
 function getAIClients() {
@@ -740,14 +740,12 @@ export async function POST(request) {
           
           let nextRawAns = null;
           if (rawAns && samePageRawAnswers.length > 0) {
-            const cleanStart = cleanTextForMatch(rawAns.startAnchor);
-            const currentLineIdx = pageLines.findIndex(line => cleanTextForMatch(line.text).includes(cleanStart));
+            const currentLineIdx = pageLines.findIndex(line => isLineMatch(line.text, rawAns.startAnchor));
             
             if (currentLineIdx !== -1) {
               let minDiff = Infinity;
               samePageRawAnswers.forEach(otherAns => {
-                const otherCleanStart = cleanTextForMatch(otherAns.startAnchor);
-                const otherLineIdx = pageLines.findIndex(line => cleanTextForMatch(line.text).includes(otherCleanStart));
+                const otherLineIdx = pageLines.findIndex(line => isLineMatch(line.text, otherAns.startAnchor));
                 if (otherLineIdx > currentLineIdx && (otherLineIdx - currentLineIdx) < minDiff) {
                   minDiff = otherLineIdx - currentLineIdx;
                   nextRawAns = otherAns;
