@@ -4,7 +4,7 @@ import { computeHighlightRegion, cleanTextForMatch, isLineMatch } from '../../..
 
 // ─── Server-side only — Multi-key setup targeting identical model & config ─────
 function getAIClients() {
-  const preferredOrder = [1, 2, 3, 4];
+  const preferredOrder = [5, 1, 2, 3, 4];
   const clients = [];
 
   for (const i of preferredOrder) {
@@ -25,7 +25,7 @@ function getAIClients() {
   return clients;
 }
 
-const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const QUOTA_ERROR_MESSAGE = 'Too many tokens used. Try again later.';
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
@@ -574,8 +574,19 @@ Return ONLY the JSON array. No explanation.`;
     { role: 'user', parts }
   ], 'Stage1-ExtractQuestions', { maxOutputTokens: 4096 });
 
-  const questions = extractJSON(response.text);
+  let questions = extractJSON(response.text);
+  if (questions && !Array.isArray(questions)) {
+    if (Array.isArray(questions.questions)) {
+      questions = questions.questions;
+    } else if (Array.isArray(questions.items)) {
+      questions = questions.items;
+    } else if (Array.isArray(questions.data)) {
+      questions = questions.data;
+    }
+  }
+
   if (!Array.isArray(questions) || questions.length === 0) {
+    console.error('[API][Stage1] Raw response text:', response.text);
     throw new Error('Stage 1 failed: no questions extracted from response');
   }
 
