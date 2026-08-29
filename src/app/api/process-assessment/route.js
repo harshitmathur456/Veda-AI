@@ -1,61 +1,123 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 
-// ─── Server-side only — API key never exposed to browser ─────────────────
-const apiKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+// ─── Server-side only — Multi-key setup, never exposed to browser ────────────
+// Primary and fallback API keys for quota/rate-limit resilience
+const API_KEYS = [
+  { label: 'key-1', value: process.env.GEMINI_API_KEY_1 },
+  { label: 'key-2', value: process.env.GEMINI_API_KEY_2 },
+].filter(k => k.value); // only include keys that are actually set
+
+// Legacy single-key fallback if _1/_2 are not configured
+if (API_KEYS.length === 0) {
+  const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+  if (legacyKey) {
+    API_KEYS.push({ label: 'key-legacy', value: legacyKey });
+  }
+}
+
+// Create a GoogleGenAI client per key
+const AI_CLIENTS = API_KEYS.map(k => ({
+  label: k.label,
+  client: new GoogleGenAI({ apiKey: k.value }),
+}));
+
+console.log(`[API] Initialized ${AI_CLIENTS.length} Gemini API key(s): ${AI_CLIENTS.map(c => c.label).join(', ')}`);
+
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
 
 /**
- * Try each model in sequence until one returns a valid response.
- * This fallback chain handles model availability changes and rate limits
- * without requiring manual config updates.
+ * Check if an error is a rate-limit / quota-exhausted error
+ * that warrants falling back to the next API key.
+ */
+function isQuotaOrRateLimitError(err) {
+  const status = err.status || err.statusCode || err.httpStatusCode;
+  if (status === 429) return true;
+
+  const msg = (err.message || '').toLowerCase();
+  const code = (err.code || '').toLowerCase();
+
+  return (
+    msg.includes('resource_exhausted') ||
+    msg.includes('quota') ||
+    msg.includes('rate limit') ||
+    msg.includes('too many requests') ||
+    code.includes('resource_exhausted') ||
+    code === '429'
+  );
+}
+
+/**
+ * Call Gemini with multi-key + multi-model fallback.
+ *
+ * Strategy:
+ *  - For each API key, try each model in sequence.
+ *  - If a call fails with a quota/rate-limit error, move to the next key.
+ *  - If a call fails with a non-quota error (network, malformed, etc.),
+ *    try the next model under the SAME key, then move to the next key.
+ *  - Only surface the final error if ALL keys × models are exhausted.
  */
 async function callGeminiVision(contents, stageName = 'unknown') {
+  if (AI_CLIENTS.length === 0) {
+    throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1 and GEMINI_API_KEY_2 in .env.local');
+  }
+
   // Estimate payload size for diagnostics
   const payloadEstimate = JSON.stringify(contents).length;
   console.log(`[API][${stageName}] Payload estimate: ${(payloadEstimate / 1024 / 1024).toFixed(2)} MB`);
 
-  let lastError;
   const modelsToTry = [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)];
+  let lastError;
 
-  for (const modelName of modelsToTry) {
-    const startTime = Date.now();
-    try {
-      console.log(`[API][${stageName}] Calling model: ${modelName}`);
+  for (const { label: keyLabel, client: aiClient } of AI_CLIENTS) {
+    let hitQuotaOnThisKey = false;
 
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents,
-      });
+    for (const modelName of modelsToTry) {
+      const startTime = Date.now();
+      try {
+        console.log(`[API][${stageName}] Trying ${keyLabel} → model: ${modelName}`);
 
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[API][${stageName}] Model ${modelName} responded in ${elapsed}s, has text: ${!!response?.text}`);
+        const response = await aiClient.models.generateContent({
+          model: modelName,
+          contents,
+        });
 
-      if (response && response.text) {
-        return response;
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[API][${stageName}] ✓ ${keyLabel} → ${modelName} responded in ${elapsed}s, has text: ${!!response?.text}`);
+
+        if (response && response.text) {
+          return response;
+        }
+
+        console.warn(`[API][${stageName}] ${keyLabel} → ${modelName} returned empty text, trying next model...`);
+      } catch (err) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const status = err.status || err.statusCode || err.httpStatusCode || 'N/A';
+        const code = err.code || 'N/A';
+        console.error(`[API][${stageName}] ✗ ${keyLabel} → ${modelName} FAILED after ${elapsed}s:`, {
+          status, code, message: err.message, name: err.name,
+        });
+        lastError = err;
+
+        if (isQuotaOrRateLimitError(err)) {
+          console.warn(`[API][${stageName}] ${keyLabel} hit quota/rate limit — switching to next key`);
+          hitQuotaOnThisKey = true;
+          break; // skip remaining models for this key, try next key
+        }
+        // Non-quota error: try next model with same key
       }
+    }
 
-      console.warn(`[API][${stageName}] Model ${modelName} returned empty text, trying next...`);
-    } catch (err) {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const status = err.status || err.statusCode || err.httpStatusCode || 'N/A';
-      const code = err.code || 'N/A';
-      console.error(`[API][${stageName}] Model ${modelName} FAILED after ${elapsed}s:`, {
-        status,
-        code,
-        message: err.message,
-        name: err.name,
-        details: err.details || err.errorDetails || undefined,
-      });
-      lastError = err;
+    if (!hitQuotaOnThisKey && lastError) {
+      // All models failed on this key for non-quota reasons — still try next key
+      console.warn(`[API][${stageName}] All models failed on ${keyLabel}, trying next key...`);
     }
   }
 
   const finalStatus = lastError?.status || lastError?.statusCode || 'N/A';
-  console.error(`[API][${stageName}] ALL models failed. Last error status: ${finalStatus}, message: ${lastError?.message}`);
-  throw lastError || new Error('All Gemini models failed');
+  console.error(`[API][${stageName}] ALL keys × models exhausted. Last error status: ${finalStatus}, message: ${lastError?.message}`);
+  throw lastError || new Error('All Gemini API keys and models failed');
 }
 
 export const maxDuration = 120; // 2 minutes for long extractions
@@ -598,10 +660,10 @@ Return ONLY the JSON object. No extra text or markdown.`;
 // ─── API Route Handler ───────────────────────────────────────────────────
 
 export async function POST(request) {
-  if (!ai) {
-    console.error('[API] No Gemini API key configured');
+  if (AI_CLIENTS.length === 0) {
+    console.error('[API] No Gemini API keys configured');
     return NextResponse.json(
-      { success: false, error: 'No Gemini API key configured. Set GEMINI_API_KEY in .env.local' },
+      { success: false, error: 'No Gemini API keys configured. Set GEMINI_API_KEY_1 and GEMINI_API_KEY_2 in .env.local' },
       { status: 500 }
     );
   }
