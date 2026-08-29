@@ -35,27 +35,83 @@ export const maxDuration = 120; // 2 minutes for long extractions
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Extract JSON from Gemini's response text, which may contain markdown fences
- * or leading/trailing prose. Tries array match first, then object match.
+ * Extract balanced JSON substring by tracking string literals and bracket depth.
+ * This handles responses where Gemini adds prose or extra brackets after/before the JSON block.
+ */
+function findBalancedJSON(text, startChar, endChar) {
+  const startIdx = text.indexOf(startChar);
+  if (startIdx === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = startIdx; i < text.length; i++) {
+    const char = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === startChar) {
+        depth++;
+      } else if (char === endChar) {
+        depth--;
+        if (depth === 0) {
+          return text.substring(startIdx, i + 1);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract JSON from Gemini's response text.
  */
 function extractJSON(text) {
-  let cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+  if (!text) return null;
 
-  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (arrayMatch) {
-    try { return JSON.parse(arrayMatch[0]); } catch (e) {
-      console.error('[API] JSON array parse failed:', e.message);
+  // 1. Try stripping markdown fences
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  let cleaned = fenceMatch ? fenceMatch[1].trim() : text.trim();
+
+  // Try direct parse first
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    // Continue
+  }
+
+  // 2. Try balanced array extraction
+  const arrCandidate = findBalancedJSON(cleaned, '[', ']');
+  if (arrCandidate) {
+    try {
+      return JSON.parse(arrCandidate);
+    } catch (e) {
+      console.error('[API] Balanced array parse failed:', e.message);
     }
   }
 
-  const objMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (objMatch) {
-    try { return JSON.parse(objMatch[0]); } catch (e) {
-      console.error('[API] JSON object parse failed:', e.message);
+  // 3. Try balanced object extraction
+  const objCandidate = findBalancedJSON(cleaned, '{', '}');
+  if (objCandidate) {
+    try {
+      return JSON.parse(objCandidate);
+    } catch (e) {
+      console.error('[API] Balanced object parse failed:', e.message);
     }
   }
 
-  console.error('[API] Could not extract JSON from response');
+  console.error('[API] Could not extract JSON from response:', text.substring(0, 300));
   return null;
 }
 

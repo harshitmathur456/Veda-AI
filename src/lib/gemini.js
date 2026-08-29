@@ -6,8 +6,6 @@
  * The Gemini SDK runs ONLY on the server — never in the browser.
  */
 
-import { MOCK_QUESTIONS, MOCK_ANSWERS, UNANSWERED_QUESTIONS, MOCK_SUMMARY } from './mockData';
-
 /**
  * Process Question Paper & Answer Sheet via the server-side Gemini pipeline.
  * @param {Array<{page: number, base64: string}>} qpImages
@@ -16,11 +14,11 @@ import { MOCK_QUESTIONS, MOCK_ANSWERS, UNANSWERED_QUESTIONS, MOCK_SUMMARY } from
  */
 export async function processAssessmentWithGemini(qpImages, asImages, onProgressCallback = () => {}) {
   if (!qpImages?.length || !asImages?.length) {
-    console.error('[Client] No images to process');
-    onProgressCallback({ stage: 4, text: 'No images — using sample data' });
-    return { questions: MOCK_QUESTIONS, answers: MOCK_ANSWERS, unanswered: UNANSWERED_QUESTIONS, summary: MOCK_SUMMARY };
+    console.error('[Client Pipeline] Missing required images: QP page count =', qpImages?.length, 'AS page count =', asImages?.length);
+    throw new Error('Failed to process uploaded files: No page images were generated.');
   }
 
+  console.log('[Client Pipeline] Starting assessment processing for QP pages:', qpImages.length, '| AS pages:', asImages.length);
   onProgressCallback({ stage: 1, text: 'Sending files to AI engine...' });
 
   try {
@@ -59,12 +57,12 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
           } else if (msg.type === 'result') {
             finalResult = msg.data;
           } else if (msg.type === 'error') {
-            console.error('[Client] Server error:', msg.error);
+            console.error('[Client Pipeline] Server pipeline error:', msg.error);
             throw new Error(msg.error);
           }
         } catch (parseErr) {
           // Re-throw actual pipeline errors; ignore NDJSON parse issues
-          if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage')) {
+          if (parseErr.message?.includes('Server error') || parseErr.message?.includes('Stage') || parseErr.message?.includes('failed')) {
             throw parseErr;
           }
         }
@@ -72,8 +70,14 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
     }
 
     if (!finalResult) {
-      throw new Error('Pipeline completed but no result received');
+      throw new Error('Pipeline completed but no result was received from AI server.');
     }
+
+    console.log('[Client Pipeline] Assessment processing successfully completed!', {
+      questionsCount: finalResult.questions?.length,
+      answersCount: finalResult.answers?.length,
+      summary: finalResult.summary,
+    });
 
     return finalResult;
 
@@ -83,20 +87,13 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
       ? 'Connection failed (server offline or network error)'
       : err.message || 'Unknown pipeline error';
 
-    console.error('[Client] Pipeline error:', friendlyErrMsg);
+    console.error('[Client Pipeline] Critical pipeline error:', friendlyErrMsg);
 
     onProgressCallback({
       stage: 0,
-      text: `${friendlyErrMsg}. Loading sample evaluation data...`,
+      text: `Pipeline Error: ${friendlyErrMsg}`,
     });
 
-    await new Promise(r => setTimeout(r, 1500));
-
-    return {
-      questions: MOCK_QUESTIONS,
-      answers: MOCK_ANSWERS,
-      unanswered: UNANSWERED_QUESTIONS,
-      summary: MOCK_SUMMARY,
-    };
+    throw new Error(friendlyErrMsg);
   }
 }

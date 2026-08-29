@@ -8,7 +8,7 @@ import { supabase } from './supabase.js';
  */
 export function detectStudentNameFromFilename(filename) {
   if (!filename || typeof filename !== 'string') {
-    return { studentName: null, studentNameSource: 'unspecified' };
+    return { studentName: '', studentNameSource: 'unspecified' };
   }
 
   // Remove extension
@@ -27,7 +27,9 @@ export function detectStudentNameFromFilename(filename) {
     'paper', 'pdf', 'doc', 'docx', 'copy', 'scan', 'scanned',
     'img', 'image', 'file', 'upload', 'assignment', 'test', 'exam',
     'final', 'draft', 'v1', 'v2', 'new', 'page', 'pages',
-    'sample', 'question'
+    'sample', 'question', 'bio', 'biology', 'math', 'maths',
+    'science', 'physics', 'chem', 'chemistry', 'history', 'english',
+    'hindi', 'class', 'grade', 'unit', 'sec', 'section', 'term'
   ]);
 
   // Filter out known keywords and numeric-only tokens
@@ -38,23 +40,21 @@ export function detectStudentNameFromFilename(filename) {
     return true;
   });
 
-  // Check if remaining tokens contain valid letters
-  const validNameTokens = remainingTokens.filter(t => /[a-zA-Z]/.test(t));
+  // Extract clean letter tokens with minimum 2 characters
+  const validNameTokens = remainingTokens
+    .map(t => t.replace(/[^a-zA-Z]/g, ''))
+    .filter(t => t.length >= 2);
 
-  if (validNameTokens.length === 0) {
-    return { studentName: null, studentNameSource: 'unspecified' };
+  // Require AT LEAST TWO WORDS (a plausible first + last name pattern)
+  // Single generic words like "Bio", "Test", "Copy", "Scan" must be rejected.
+  if (validNameTokens.length < 2) {
+    return { studentName: '', studentNameSource: 'unspecified' };
   }
 
   // Title-case the valid name tokens
   const titleCased = validNameTokens.map(t => {
-    const cleanToken = t.replace(/[^a-zA-Z]/g, '');
-    if (!cleanToken) return '';
-    return cleanToken.charAt(0).toUpperCase() + cleanToken.slice(1).toLowerCase();
-  }).filter(Boolean).join(' ');
-
-  if (!titleCased || titleCased.length < 2) {
-    return { studentName: null, studentNameSource: 'unspecified' };
-  }
+    return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+  }).join(' ');
 
   return {
     studentName: titleCased,

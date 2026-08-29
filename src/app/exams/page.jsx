@@ -8,7 +8,6 @@ import ResultsView from '@/components/results/ResultsView';
 
 import { convertFileToImages } from '@/lib/pdfUtils';
 import { processAssessmentWithGemini } from '@/lib/gemini';
-import { MOCK_QUESTIONS, MOCK_ANSWERS, UNANSWERED_QUESTIONS, MOCK_SUMMARY } from '@/lib/mockData';
 
 export default function ExamsPage() {
   const [viewStep, setViewStep] = useState('upload'); // 'upload' | 'processing' | 'results'
@@ -31,6 +30,13 @@ export default function ExamsPage() {
   const executeMappingFlow = async (targetQp, targetAs) => {
     if (!targetQp || !targetAs) return;
 
+    console.log('[ExamsPage] Processing Upload Files:', {
+      qpFileName: targetQp.name,
+      qpFileSize: targetQp.size,
+      asFileName: targetAs.name,
+      asFileSize: targetAs.size,
+    });
+
     setViewStep('processing');
 
     try {
@@ -39,14 +45,28 @@ export default function ExamsPage() {
       const qpImages = await convertFileToImages(targetQp);
       const asImages = await convertFileToImages(targetAs);
 
+      console.log('[ExamsPage] Converted file pages to images:', {
+        qpPageImagesCount: qpImages.length,
+        asPageImagesCount: asImages.length,
+      });
+
       if (!qpImages.length || !asImages.length) {
-        console.error('[ExamsPage] File conversion failed — no images produced');
+        throw new Error('File page conversion failed — could not generate images from uploaded files.');
       }
 
       // Step 2: Send page images through the 3-stage Gemini pipeline (extract → map → grade)
       setProcessingStatus({ stage: 1, text: 'Sending files to AI engine...' });
       const result = await processAssessmentWithGemini(qpImages, asImages, (status) => {
         setProcessingStatus(status);
+      });
+
+      console.log('[ExamsPage] Raw API Result Received Immediately Before Rendering:', {
+        qpFileName: targetQp.name,
+        asFileName: targetAs.name,
+        totalQuestionsExtracted: result.questions?.length,
+        extractedQuestionIds: result.questions?.map(q => q.id),
+        attemptedCount: result.summary?.attemptedCount,
+        totalScore: `${result.summary?.totalMarksObtained}/${result.summary?.totalMaxMarks}`,
       });
 
       setAssessmentData({
@@ -58,18 +78,12 @@ export default function ExamsPage() {
 
       setViewStep('results');
     } catch (error) {
-      console.error('[ExamsPage] Pipeline error:', error);
-      // Fallback to mock data so the UI never breaks on pipeline failure
-      setAssessmentData({
-        questions: MOCK_QUESTIONS,
-        answers: MOCK_ANSWERS,
-        unanswered: UNANSWERED_QUESTIONS,
-        summary: MOCK_SUMMARY,
-        asImages: [],
-        qpFileName: targetQp.name,
-        asFileName: targetAs.name
+      console.error('[ExamsPage] Pipeline processing failed:', error);
+      setProcessingStatus({
+        stage: 0,
+        text: `Evaluation Failed: ${error.message || 'Unknown pipeline error'}. Please retry uploading.`,
       });
-      setViewStep('results');
+      setSampleError(`Evaluation failed: ${error.message || 'Unknown pipeline error'}. Please verify files and try again.`);
     }
   };
 
