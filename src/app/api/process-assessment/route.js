@@ -25,7 +25,7 @@ function getAIClients() {
   return clients;
 }
 
-const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 const QUOTA_ERROR_MESSAGE = 'Too many tokens used. Try again later.';
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
