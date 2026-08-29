@@ -412,7 +412,26 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
     isExcludedAlternative: excludedQIds.has(q.id)
   }));
 
-  const processedAnswers = gradedAnswers.map(g => {
+  // Ensure all questions (especially excluded alternative choices) have a matching answer record
+  const gradedQIds = new Set(gradedAnswers.map(g => g.questionId));
+  const fullGradedAnswers = [...gradedAnswers];
+
+  questions.forEach(q => {
+    if (!gradedQIds.has(q.id)) {
+      const isEx = excludedQIds.has(q.id);
+      fullGradedAnswers.push({
+        id: `ans_${q.id}`,
+        questionId: q.id,
+        marks: 0,
+        maxMarks: q.maxMarks || 1,
+        verdict: isEx ? 'OR Choice Not Selected' : 'Unanswered',
+        rationale: isEx ? 'OR alternative choice not selected by student.' : 'Question was not attempted.',
+        extractedText: ''
+      });
+    }
+  });
+
+  const processedAnswers = fullGradedAnswers.map(g => {
     const qId = g.questionId;
     const isExcluded = excludedQIds.has(qId);
     return {
@@ -764,13 +783,14 @@ export async function POST(request) {
             }
           }
 
-          const bbox = rawAns
+          const isExcluded = graded.isExcludedAlternative || graded.status === 'excluded_alternative';
+          const bbox = (rawAns && !isExcluded)
             ? computeHighlightRegion(pageLines, rawAns.startAnchor, rawAns.endAnchor, nextRawAns?.startAnchor)
-            : { ymin: 10, xmin: 2, ymax: 25, xmax: 98 };
+            : null;
 
           return {
             ...graded,
-            page: pageNum,
+            page: isExcluded ? null : (rawAns?.page || 1),
             bbox,
             extractedText: rawAns?.extractedText || graded.extractedText || '',
           };

@@ -143,7 +143,7 @@ export default function AnswerViewer({
     }
   }, [selectedQuestionId, activeAnswer, totalPages]);
 
-  const answersForCurrentPage = answers.filter(a => a.page === currentPage && a.bbox);
+  const answersForCurrentPage = answers.filter(a => a.page === currentPage && a.bbox && !a.isExcludedAlternative && a.status !== 'excluded_alternative');
 
   const getQuestionLabel = useCallback((qId) => {
     const q = questions.find(item => item.id === qId);
