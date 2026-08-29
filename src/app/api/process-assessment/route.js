@@ -213,6 +213,123 @@ function findBalancedJSON(text, startChar, endChar) {
 }
 
 /**
+ * Attempt to repair a truncated JSON array by parsing up to the last complete object.
+ */
+function repairTruncatedJSONArray(text) {
+  if (!text) return null;
+  const startIdx = text.indexOf('[');
+  if (startIdx === -1) return null;
+
+  const cleaned = text.substring(startIdx).trim();
+
+  let lastBraceIdx = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const char = cleaned[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === '{') {
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth === 0) {
+          lastBraceIdx = i;
+        }
+      }
+    }
+  }
+
+  if (lastBraceIdx !== -1) {
+    const candidate = cleaned.substring(0, lastBraceIdx + 1) + '\n]';
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        console.log(`[API] [JSON Repair] Repaired truncated JSON array — recovered ${parsed.length} items`);
+        return parsed;
+      }
+    } catch (e) {
+      console.error('[API] [JSON Repair] Failed to parse candidate array:', e.message);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Attempt to repair a truncated JSON object by parsing up to the last complete property/object.
+ */
+function repairTruncatedJSONObject(text) {
+  if (!text) return null;
+  const startIdx = text.indexOf('{');
+  if (startIdx === -1) return null;
+
+  const cleaned = text.substring(startIdx).trim();
+
+  let lastBraceIdx = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const char = cleaned[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === '{') {
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth >= 1) {
+          lastBraceIdx = i;
+        }
+      }
+    }
+  }
+
+  if (lastBraceIdx !== -1) {
+    const suffixes = ['\n]}', '\n}', ']}', '}'];
+    for (const suffix of suffixes) {
+      try {
+        const candidate = cleaned.substring(0, lastBraceIdx + 1) + suffix;
+        const parsed = JSON.parse(candidate);
+        if (typeof parsed === 'object' && parsed !== null) {
+          console.log('[API] [JSON Repair] Repaired truncated JSON object');
+          return parsed;
+        }
+      } catch (e) {
+        // try next
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extract JSON from Gemini's response text.
  */
 function extractJSON(text) {
@@ -247,6 +364,18 @@ function extractJSON(text) {
     } catch (e) {
       console.error('[API] Balanced object parse failed:', e.message);
     }
+  }
+
+  // 4. Try repairing truncated JSON array
+  const repairedArr = repairTruncatedJSONArray(cleaned);
+  if (repairedArr) {
+    return repairedArr;
+  }
+
+  // 5. Try repairing truncated JSON object
+  const repairedObj = repairTruncatedJSONObject(cleaned);
+  if (repairedObj) {
+    return repairedObj;
   }
 
   console.error('[API] Could not extract JSON from response:', text.substring(0, 300));
@@ -521,8 +650,22 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
 
 // ─── Stage 1: Extract Questions ──────────────────────────────────────────
 
-async function extractQuestions(qpImages, qpText = null) {
-  const prompt = `You are an expert exam paper digitizer. Analyze the provided Question Paper.
+function getQuestionArray(responseText) {
+  let questions = extractJSON(responseText);
+  if (questions && !Array.isArray(questions)) {
+    for (const key of ['questions', 'items', 'data', 'extractedQuestions', 'results']) {
+      if (Array.isArray(questions[key])) return questions[key];
+    }
+  }
+  return Array.isArray(questions) ? questions : null;
+}
+
+function buildQuestionExtractionPrompt(pageNumber = null) {
+  const pageScope = pageNumber === null
+    ? 'Analyze all provided pages of the Question Paper.'
+    : `Analyze only page ${pageNumber} of the Question Paper. Return every question that starts or continues on this page, and set "page" to ${pageNumber}.`;
+
+  return `You are an expert exam paper digitizer. ${pageScope}
 
 Extract EVERY question and sub-question from the paper.
 
@@ -560,6 +703,37 @@ Rules:
 - "alternativeOption": "a", "b", etc. if part of an OR choice pair, otherwise null.
 
 Return ONLY the JSON array. No explanation.`;
+}
+
+async function extractQuestionsPageByPage(qpImages) {
+  const extracted = [];
+
+  for (const image of qpImages) {
+    const pageNumber = Number(image.page) || extracted.length + 1;
+    console.warn(`[API][Stage1] Retrying question extraction for page ${pageNumber} only`);
+    const response = await callGeminiVision([
+      {
+        role: 'user',
+        parts: [
+          { text: buildQuestionExtractionPrompt(pageNumber) },
+          ...buildImageParts([image]),
+        ],
+      },
+    ], `Stage1-ExtractQuestions-Page${pageNumber}`, { maxOutputTokens: 8192 });
+
+    const pageQuestions = getQuestionArray(response.text);
+    if (!pageQuestions?.length) {
+      console.error(`[API][Stage1] Page ${pageNumber} retry returned no questions:`, response.text);
+      continue;
+    }
+    extracted.push(...pageQuestions.map(question => ({ ...question, page: question.page || pageNumber })));
+  }
+
+  return extracted;
+}
+
+async function extractQuestions(qpImages, qpText = null) {
+  const prompt = buildQuestionExtractionPrompt();
 
   let parts;
   if (qpText && qpText.trim().length > 50) {
@@ -572,21 +746,19 @@ Return ONLY the JSON array. No explanation.`;
 
   const response = await callGeminiVision([
     { role: 'user', parts }
-  ], 'Stage1-ExtractQuestions', { maxOutputTokens: 4096 });
+  ], 'Stage1-ExtractQuestions', { maxOutputTokens: 8192 });
 
-  let questions = extractJSON(response.text);
-  if (questions && !Array.isArray(questions)) {
-    if (Array.isArray(questions.questions)) {
-      questions = questions.questions;
-    } else if (Array.isArray(questions.items)) {
-      questions = questions.items;
-    } else if (Array.isArray(questions.data)) {
-      questions = questions.data;
-    }
+  let questions = getQuestionArray(response.text);
+
+  if (!Array.isArray(questions) || questions.length === 0) {
+    console.error('[API][Stage1] Full-paper response contained no parseable questions:', response.text);
+    // Scanned PDFs can intermittently fail as a multi-image request even though
+    // each rendered page is readable. Retrying one page at a time also keeps
+    // each JSON response well below the model's output limit.
+    questions = await extractQuestionsPageByPage(qpImages);
   }
 
   if (!Array.isArray(questions) || questions.length === 0) {
-    console.error('[API][Stage1] Raw response text:', response.text);
     throw new Error('Stage 1 failed: no questions extracted from response');
   }
 
