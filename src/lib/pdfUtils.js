@@ -171,3 +171,52 @@ export async function convertFileToImages(file) {
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * Extract digital text layer from a PDF file if present.
+ * Returns the extracted text string if > 50 characters, or null if scanned / image-only.
+ * @param {File} file
+ * @returns {Promise<string|null>}
+ */
+export async function extractDigitalTextFromPDF(file) {
+  if (!file || (file.type !== 'application/pdf' && !file.name?.toLowerCase().endsWith('.pdf'))) {
+    return null;
+  }
+  try {
+    if (typeof window === 'undefined') return null;
+    const pdfjsLib = await import('pdfjs-dist');
+    const version = pdfjsLib.version || '4.10.38';
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(arrayBuffer),
+      useSystemFonts: true,
+      cMapUrl: `https://unpkg.com/pdfjs-dist@${version}/cmaps/`,
+      cMapPacked: true,
+      standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${version}/standard_fonts/`,
+    });
+
+    const pdf = await loadingTask.promise;
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(item => item.str).join(' ');
+      if (pageText.trim()) {
+        fullText += `--- Page ${i} ---\n${pageText}\n`;
+      }
+    }
+
+    const clean = fullText.replace(/\s+/g, ' ').trim();
+    if (clean.length > 50) {
+      console.log(`[pdfUtils] ✓ Digital PDF text layer detected (${clean.length} chars)`);
+      return fullText;
+    }
+  } catch (err) {
+    console.warn('[pdfUtils] Digital PDF text extraction failed, falling back to vision:', err);
+  }
+  return null;
+}

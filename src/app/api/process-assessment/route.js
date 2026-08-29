@@ -65,6 +65,16 @@ function isQuotaOrRateLimitError(err) {
   );
 }
 
+import crypto from 'crypto';
+
+// In-memory caches for Stage 1 and Stage 2 results keyed by SHA-256 hash
+const stage1Cache = new Map();
+const stage2Cache = new Map();
+
+function computeHash(data) {
+  return crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
+}
+
 /**
  * Call Gemini using API key rotation with identical request parameters.
  * Strategy:
@@ -72,7 +82,7 @@ function isQuotaOrRateLimitError(err) {
  *  - Identical request payload, prompt, and parameters.
  *  - If Key 1 hits a 429 rate limit, try Key 2 -> Key 3 -> Key 4.
  */
-async function callGeminiVision(contents, stageName = 'unknown') {
+async function callGeminiVision(contents, stageName = 'unknown', customConfig = {}) {
   const aiClients = getAIClients();
   if (aiClients.length === 0) {
     throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4 in .env.local');
@@ -83,9 +93,13 @@ async function callGeminiVision(contents, stageName = 'unknown') {
 
   let lastError = null;
 
-  // Filter out keys marked exhausted within 60s
   const availableClients = aiClients.filter(c => !isKeyRecentlyExhausted(c.label));
   const clientsToTry = availableClients.length > 0 ? availableClients : aiClients;
+
+  const genConfig = {
+    responseMimeType: 'application/json',
+    ...customConfig,
+  };
 
   for (const { label: keyLabel, client: aiClient } of clientsToTry) {
     const startTime = Date.now();
@@ -95,9 +109,16 @@ async function callGeminiVision(contents, stageName = 'unknown') {
       const response = await aiClient.models.generateContent({
         model: MODEL_ID,
         contents,
+        config: genConfig,
       });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      if (response?.usageMetadata) {
+        const { promptTokenCount, candidatesTokenCount, totalTokenCount } = response.usageMetadata;
+        console.log(`[TokenTracker][${stageName}] Usage: Prompt=${promptTokenCount || 0} | Output=${candidatesTokenCount || 0} | Total=${totalTokenCount || 0}`);
+      }
+
       console.log(`[API][${stageName}] ✓ ${keyLabel} responded in ${elapsed}s`);
 
       if (response && response.text) {
@@ -125,7 +146,14 @@ async function callGeminiVision(contents, stageName = 'unknown') {
       const response = await aiClient.models.generateContent({
         model: MODEL_ID,
         contents,
+        config: genConfig,
       });
+
+      if (response?.usageMetadata) {
+        const { promptTokenCount, candidatesTokenCount, totalTokenCount } = response.usageMetadata;
+        console.log(`[TokenTracker][${stageName}][Sweep] Usage: Prompt=${promptTokenCount || 0} | Output=${candidatesTokenCount || 0} | Total=${totalTokenCount || 0}`);
+      }
+
       if (response && response.text) {
         return response;
       }
@@ -455,8 +483,8 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
     totalQuestions,
     unansweredCount,
     unmatchedCount: gradingResult.summary?.unmatchedCount || 0,
-    strengths: gradingResult.summary?.strengths || [],
-    weakAreas,
+    strengths: (gradingResult.summary?.strengths || []).slice(0, 3),
+    weakAreas: weakAreas.slice(0, 3),
     overallTeacherNote: gradingResult.summary?.overallTeacherNote || 'Assessment evaluation complete.'
   };
 
@@ -471,13 +499,13 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
 
 // ─── Stage 1: Extract Questions ──────────────────────────────────────────
 
-async function extractQuestions(qpImages) {
-  const prompt = `You are an expert exam paper analyzer. Look at the attached question paper image(s) carefully.
+async function extractQuestions(qpImages, qpText = null) {
+  const prompt = `You are an expert exam paper digitizer. Analyze the provided Question Paper.
 
-Extract EVERY question in the exact order they appear. For questions with sub-parts (like 11a, 11b), create a separate entry for each sub-part.
+Extract EVERY question and sub-question from the paper.
 
-CRITICAL: DETECT "OR" ALTERNATIVE CHOICE QUESTIONS
-Look carefully for the word "OR" or "Or" appearing as a standalone label separating two sub-options under the same question number (e.g. between 18(a) and 18(b), 20(a) and 20(b), 21(a) and 21(b)).
+CRITICAL OR / ALTERNATIVE QUESTION IDENTIFICATION:
+Look carefully for the word "OR" or "Or" appearing as a standalone label separating two sub-options under the same question number.
 When an "OR" structure is present between sub-parts under the same main question number:
 1. Mark both sub-options with "isAlternativeGroup": true.
 2. Set "alternativeGroupId" to the main question number string (e.g., "18", "20", "21").
@@ -509,13 +537,20 @@ Rules:
 - "alternativeGroupId": string matching the parent question number (e.g. "18") if part of an OR choice pair, otherwise null.
 - "alternativeOption": "a", "b", etc. if part of an OR choice pair, otherwise null.
 
-Return ONLY the JSON array. No explanation, no markdown fences.`;
+Return ONLY the JSON array. No explanation.`;
 
-  const imageParts = buildImageParts(qpImages);
+  let parts;
+  if (qpText && qpText.trim().length > 50) {
+    console.log('[API][Stage1] Using digital PDF text layer for question extraction');
+    parts = [{ text: prompt + '\n\n' + qpText }];
+  } else {
+    const imageParts = buildImageParts(qpImages);
+    parts = [{ text: prompt }, ...imageParts];
+  }
 
   const response = await callGeminiVision([
-    { role: 'user', parts: [{ text: prompt }, ...imageParts] }
-  ], 'Stage1-ExtractQuestions');
+    { role: 'user', parts }
+  ], 'Stage1-ExtractQuestions', { maxOutputTokens: 4096 });
 
   const questions = extractJSON(response.text);
   if (!Array.isArray(questions) || questions.length === 0) {
@@ -561,7 +596,7 @@ Return ONLY the JSON object. Do not include markdown fences or explanation.`;
 
   const response = await callGeminiVision([
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
-  ], 'Stage2-ExtractAnswers');
+  ], 'Stage2-ExtractAnswers', { maxOutputTokens: 8192 });
 
   const result = extractJSON(response.text);
   if (!result || !Array.isArray(result.answers)) {
@@ -593,40 +628,21 @@ async function gradeAndMap(questions, answers) {
     })),
   };
 
-  /**
-   * The grading prompt uses a structured evaluation rubric with semantic matching
-   * across candidate questions and explicit deduction rules for incorrect answers.
-   */
   const prompt = `You are a strict academic exam evaluator and subject matter expert. Grade each student answer against its corresponding question.
 
-CRITICAL SEMANTIC MATCHING MANDATE:
-1. Student answers may have an approximate question ID or no question ID. You MUST match each student answer to the exact question whose content and subject matter it semantically addresses!
-2. FOR OR / ALTERNATIVE QUESTIONS (e.g. Q18(a) vs Q18(b), Q20(a) vs Q20(b), Q21(a) vs Q21(b)):
-   - Check what the student actually wrote against BOTH options.
-   - Do NOT assume option (a) by default! Match based strictly on the semantic content of the answer.
-   - Example 1: If the student wrote about "seed dormancy" or "pea seed / castor seed", match it to the seed question (18(a)), NOT 18(b).
-   - Example 2: If the student wrote about "follicle / primary oocyte / meiotic division", match it to 18(b).
-   - Example 3: If the student wrote about "Humoral Immune Response" or "antibodies IgG, IgM", match it to the immune response question (17(a) / 17(b)).
-   - Example 4: If the student wrote about "XO / ZW sex determination", match it to 20(a).
-   - Example 5: If the student wrote about "inverted pyramid of biomass", match it to 21(a).
+SEMANTIC OR-CHOICE MATCHING RULE:
+For alternative OR questions (isAlternativeGroup: true), match the student's handwritten answer text to the specific option ('a' or 'b') whose topic and subject matter it semantically addresses. Do NOT assume option 'a' by default.
 
-CRITICAL ID MANDATE:
-"id" in each gradedAnswer MUST be the EXACT "id" string from the input answer object (e.g. ans_1, ans_15, ans_23). DO NOT invent or alter the input "id" string.
+EVALUATION MANDATE:
+- Evaluate each answer for factual correctness and completeness relative to the question text.
+- Award marks strictly based on correct key terms and accuracy.
+- "verdict": "correct" (80-100%), "partial" (30-79%), or "incorrect" (0-29%).
+- "rationale": MUST be exactly ONE concise sentence explaining the awarded score.
 
-CRITICAL EVALUATION MANDATE:
-Evaluate the answer for factual correctness, accuracy, and completeness relative to the question asked.
-Do NOT give full marks simply because an answer was written — award marks based on how much of the expected correct content is present, accurate, and relevant.
-- For Multiple Choice / Matching Questions:
-  * For Column Matching (e.g. Q9): Check the student's matched pairs against the actual correct options. If the student's matching is incorrect (e.g. matching wrong columns), award ZERO marks (0/1) with verdict "incorrect".
-- For Short-Answer / Definition Questions:
-  * A wrong, incorrect, or irrelevant answer MUST receive ZERO marks (0), even if text is written.
-  * A vague or incomplete answer MUST receive partial marks.
-  * Only a complete, factually accurate answer receives full marks.
-
-GRADED DATA INPUT:
+INPUT DATA:
 ${JSON.stringify(payload, null, 2)}
 
-Return ONLY a valid JSON object matching this schema:
+Return ONLY a JSON object matching this schema:
 {
   "gradedAnswers": [
     {
@@ -635,36 +651,15 @@ Return ONLY a valid JSON object matching this schema:
       "marks": 1,
       "maxMarks": 1,
       "verdict": "correct",
-      "confidence": 0.95,
-      "status": "matched",
-      "rationale": "One concise sentence stating why this exact score was awarded, referencing key terms present or missing.",
-      "feedback": "2-3 sentences of detailed, constructive teacher feedback."
+      "rationale": "One concise sentence explaining the score."
     }
   ],
-  "unanswered": ["q5"],
   "summary": {
-    "totalMarksObtained": 14,
-    "totalMaxMarks": 20,
-    "percentage": 70.0,
-    "attemptedCount": 8,
-    "totalQuestions": 10,
-    "unansweredCount": 2,
-    "unmatchedCount": 0,
-    "strengths": ["Data Communication concepts"],
-    "weakAreas": ["Topology definitions"],
-    "overallTeacherNote": "Comprehensive overall summary of student's actual subject mastery."
+    "strengths": ["At most 3 key strengths"],
+    "weakAreas": ["At most 3 key weak areas"],
+    "overallTeacherNote": "Brief teacher note."
   }
-}
-
-VERDICT RULES:
-- "correct": 80-100% of maxMarks
-- "partial": 30-79% of maxMarks
-- "incorrect": 0-29% of maxMarks
-
-RATIONALE RULE:
-"rationale" MUST be exactly ONE concise sentence stating what key points were correct and what key points were missing or wrong to justify the awarded score.
-
-Return ONLY the JSON object. No extra text or markdown.`;
+}`;
 
   const response = await callGeminiVision([
     { role: 'user', parts: [{ text: prompt }] }
@@ -698,7 +693,7 @@ export async function POST(request) {
     return NextResponse.json({ success: false, error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { qpImages, asImages } = body;
+  const { qpImages, asImages, qpText = null, skipGrading = false } = body;
 
   if (!qpImages?.length || !asImages?.length) {
     return NextResponse.json(
@@ -717,21 +712,63 @@ export async function POST(request) {
       };
 
       try {
-        // Stage 1: Extract questions from question paper
-        send({ type: 'progress', stage: 1, text: 'Extracting questions from question paper...' });
-        const questions = await extractQuestions(qpImages);
-        send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
+        // Compute SHA-256 hashes for caching Stage 1 and Stage 2
+        const qpHash = computeHash(qpText ? qpText : qpImages);
+        const asHash = computeHash({ asImages, qpHash });
 
-        // Stage 2: Extract handwritten answers and page layout lines WITH question context
-        send({ type: 'progress', stage: 2, text: `Reading handwritten answers and page layouts from ${asImages.length} page(s)...` });
-        const stage2Result = await extractAnswers(asImages, questions);
+        // Stage 1: Extract questions (from cache if available)
+        let questions;
+        if (stage1Cache.has(qpHash)) {
+          console.log(`[Cache] ✓ Stage 1 cache hit for QP hash ${qpHash.substring(0, 10)}`);
+          questions = stage1Cache.get(qpHash);
+          send({ type: 'progress', stage: 1, text: `Loaded ${questions.length} questions (cached)` });
+        } else {
+          send({ type: 'progress', stage: 1, text: 'Extracting questions from question paper...' });
+          questions = await extractQuestions(qpImages, qpText);
+          stage1Cache.set(qpHash, questions);
+          send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
+        }
+
+        // Stage 2: Extract handwritten answers & layouts (from cache if available)
+        let stage2Result;
+        if (stage2Cache.has(asHash)) {
+          console.log(`[Cache] ✓ Stage 2 cache hit for AS hash ${asHash.substring(0, 10)}`);
+          stage2Result = stage2Cache.get(asHash);
+          send({ type: 'progress', stage: 2, text: `Loaded ${stage2Result.answers?.length || 0} student answers (cached)` });
+        } else {
+          send({ type: 'progress', stage: 2, text: `Reading handwritten answers and page layouts from ${asImages.length} page(s)...` });
+          stage2Result = await extractAnswers(asImages, questions);
+          stage2Cache.set(asHash, stage2Result);
+          send({ type: 'progress', stage: 2, text: `Extracted ${stage2Result.answers?.length || 0} student answers` });
+        }
+
         const rawAnswers = stage2Result.answers || [];
         const pageLayouts = stage2Result.pageLayouts || [];
-        send({ type: 'progress', stage: 2, text: `Extracted ${rawAnswers.length} student answers` });
 
-        // Stage 3: Grade all questions with semantic mapping for OR pairs
-        send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
-        const rawGradingResult = await gradeAndMap(questions, rawAnswers);
+        // Stage 3: Grade answers OR Skip grading if skipGrading === true
+        let rawGradingResult;
+        if (skipGrading) {
+          console.log('[API] skipGrading is true — skipping Stage 3 AI grading call');
+          send({ type: 'progress', stage: 3, text: 'Skipping grading (mapping mode)...' });
+          rawGradingResult = {
+            gradedAnswers: rawAnswers.map(a => ({
+              id: a.id,
+              questionId: a.questionId,
+              marks: 0,
+              maxMarks: questions.find(q => q.id === a.questionId)?.maxMarks || 1,
+              verdict: 'matched',
+              rationale: 'Grading skipped by request.',
+            })),
+            summary: {
+              strengths: [],
+              weakAreas: [],
+              overallTeacherNote: 'Grading skipped by request.'
+            }
+          };
+        } else {
+          send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
+          rawGradingResult = await gradeAndMap(questions, rawAnswers);
+        }
 
         const {
           questions: finalQuestions,

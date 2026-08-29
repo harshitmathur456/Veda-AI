@@ -14,13 +14,14 @@ const PIPELINE_TIMEOUT_MS = 240_000; // 4 minutes (240s) for multi-stage vision 
  * @param {Array<{page: number, base64: string}>} asImages
  * @param {function} onProgressCallback
  */
-export async function processAssessmentWithGemini(qpImages, asImages, onProgressCallback = () => {}) {
+export async function processAssessmentWithGemini(qpImages, asImages, onProgressCallback = () => {}, options = {}) {
+  const { qpText = null, skipGrading = false } = typeof options === 'object' ? options : {};
   if (!qpImages?.length || !asImages?.length) {
     console.error('[Client Pipeline] Missing required images: QP page count =', qpImages?.length, 'AS page count =', asImages?.length);
     throw new Error('Failed to process uploaded files: No page images were generated.');
   }
 
-  console.log('[Client Pipeline] Starting assessment processing for QP pages:', qpImages.length, '| AS pages:', asImages.length);
+  console.log('[Client Pipeline] Starting assessment processing for QP pages:', qpImages.length, '| AS pages:', asImages.length, '| qpText present:', !!qpText);
   onProgressCallback({ stage: 1, text: 'Sending files to AI engine...' });
 
   // Enforce a hard timeout so the UI never hangs indefinitely
@@ -34,7 +35,7 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
     const response = await fetch('/api/process-assessment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ qpImages, asImages }),
+      body: JSON.stringify({ qpImages, asImages, qpText, skipGrading }),
       signal: controller.signal,
     });
 

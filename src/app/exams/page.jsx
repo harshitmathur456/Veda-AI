@@ -6,7 +6,7 @@ import UploadView from '@/components/upload/UploadView';
 import ProcessingView from '@/components/processing/ProcessingView';
 import ResultsView from '@/components/results/ResultsView';
 
-import { convertFileToImages } from '@/lib/pdfUtils';
+import { convertFileToImages, extractDigitalTextFromPDF } from '@/lib/pdfUtils';
 import { processAssessmentWithGemini } from '@/lib/gemini';
 
 export default function ExamsPage() {
@@ -72,11 +72,14 @@ export default function ExamsPage() {
         cachedImagesRef.current = { qpImages, asImages };
       }
 
-      // Step 2: Send page images through the 3-stage Gemini pipeline (extract → map → grade)
-      setProcessingStatus({ stage: 1, text: 'Sending files to AI engine...' });
-      const result = await processAssessmentWithGemini(qpImages, asImages, (status) => {
-        setProcessingStatus(status);
-      });
+        // Extract digital text layer for Question Paper if available (to skip vision rendering tokens for digital PDFs)
+        const qpText = await extractDigitalTextFromPDF(targetQp);
+
+        // Step 2: Send page images/text through the 3-stage Gemini pipeline
+        setProcessingStatus({ stage: 1, text: 'Sending files to AI engine...' });
+        const result = await processAssessmentWithGemini(qpImages, asImages, (status) => {
+          setProcessingStatus(status);
+        }, { qpText });
 
       console.log('[ExamsPage] Raw API Result Received Immediately Before Rendering:', {
         qpFileName: targetQp.name,
