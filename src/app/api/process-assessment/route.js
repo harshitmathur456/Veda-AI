@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
+import { computeHighlightRegion, cleanTextForMatch } from '../../../lib/highlightUtils';
 
 // ─── Server-side only — Use only GEMINI_API_KEY_4 for fast, dedicated calls ──
 function getAIClients() {
@@ -241,29 +242,7 @@ function buildImageParts(pageImages) {
   });
 }
 
-function trimOverlappingBboxes(answers) {
-  const byPage = {};
-  answers.forEach(a => {
-    const p = a.page || 1;
-    if (!byPage[p]) byPage[p] = [];
-    byPage[p].push(a);
-  });
 
-  Object.values(byPage).forEach(pageAnswers => {
-    pageAnswers.sort((a, b) => (a.bbox?.ymin || 0) - (b.bbox?.ymin || 0));
-    for (let i = 0; i < pageAnswers.length - 1; i++) {
-      const curr = pageAnswers[i];
-      const next = pageAnswers[i + 1];
-      if (curr.bbox && next.bbox && curr.bbox.ymax > next.bbox.ymin) {
-        // Leave a 1% gap between consecutive answer regions
-        const gap = 1;
-        curr.bbox.ymax = Math.max(curr.bbox.ymin + 2, next.bbox.ymin - gap);
-      }
-    }
-  });
-
-  return answers;
-}
 
 /**
  * Deterministically ensure questions with OR options are tagged properly
@@ -544,47 +523,28 @@ async function extractAnswers(asImages, questions) {
     `Q${q.qNo}${q.subPart || ''} (id: ${q.id}): "${q.text.substring(0, 100)}"`
   ).join('\n');
 
-  /**
-   * The bbox instructions are critical for the answer viewer overlay.
-   * Each answer's bounding box must end where the next answer begins,
-   * so the highlight rectangles don't overlap on the answer sheet image.
-   */
   const prompt = `You are an expert at reading handwritten student answer sheets. Analyze the attached handwritten answer sheet image(s).
 
 Here are the questions from the question paper:
 ${questionsSummary}
 
-For EACH handwritten answer visible on the answer sheet:
-1. Read the handwritten text carefully, even if messy.
-2. Match it to the correct question by the question number the student wrote, or by content.
-3. Estimate a TIGHT bounding box for that answer as percentage coordinates (0-100).
+You must output a single valid JSON object with exactly two keys: "answers" and "pageLayouts".
 
-CRITICAL bounding box rules:
-- The bounding box for each answer must END exactly where the NEXT question's answer begins.
-- Do NOT include any text or content that belongs to the next question's answer.
-- If Q2's answer starts at y=35% and Q3's answer starts at y=55%, then Q2's ymax should be approximately 54% (1% margin before Q3 starts).
-- Each bbox should tightly enclose ONLY that specific answer's handwritten content.
+1. "answers" is a JSON array of objects representing each handwritten answer found on the sheet:
+   - "id": "ans_" + question id (e.g. "ans_q1", "ans_q11_a", "ans_q18_ai")
+   - "questionId": must match the exact question id from the list above.
+   - "page": the page number (1-indexed) where the answer is written.
+   - "startAnchor": the exact first 4-8 words of this answer as written by the student on the page (used to identify where the answer starts).
+   - "endAnchor": the exact last 4-8 words of this answer as written by the student on the page (used to identify where the answer ends).
+   - "extractedText": full transcription of the handwritten answer text.
 
-Return ONLY a valid JSON array:
-[
-  {
-    "id": "ans_q1",
-    "questionId": "q1",
-    "page": 1,
-    "bbox": { "ymin": 5, "xmin": 3, "ymax": 30, "xmax": 97 },
-    "extractedText": "Full transcribed handwritten answer"
-  }
-]
+2. "pageLayouts" is a JSON array of objects detailing the text layout of each page:
+   - "page": the page number (1-indexed).
+   - "lines": An array of objects representing each readable line of text on that page, ordered from top to bottom. Each line object must have:
+     - "text": The exact text transcribed from that line.
+     - "y": Approximate vertical percentage position of this line on the page (an integer between 0 and 100, where 0 is the top edge and 100 is the bottom).
 
-Rules:
-- "id": "ans_" + question id (e.g. "ans_q1", "ans_q11_a")
-- "questionId": must match a question id from above
-- "page": which answer sheet page (1-indexed)
-- "bbox": percentage coordinates (0-100). ymin=top, ymax=bottom, xmin=left, xmax=right. TIGHT fit only.
-- "extractedText": FULL transcription of the handwritten answer. For diagrams: "[Diagram: description]"
-- Omit unanswered questions entirely
-
-Return ONLY the JSON array.`;
+Return ONLY the JSON object. Do not include markdown fences or explanation.`;
 
   const imageParts = buildImageParts(asImages);
 
@@ -592,13 +552,12 @@ Return ONLY the JSON array.`;
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
   ], 'Stage2-ExtractAnswers');
 
-  const answers = extractJSON(response.text);
-  if (!Array.isArray(answers) || answers.length === 0) {
+  const result = extractJSON(response.text);
+  if (!result || !Array.isArray(result.answers)) {
     throw new Error('Stage 2 failed: no answers extracted from response');
   }
 
-  // Post-process: trim overlapping bboxes so the answer viewer renders cleanly
-  return trimOverlappingBboxes(answers);
+  return result;
 }
 
 
@@ -752,9 +711,11 @@ export async function POST(request) {
         const questions = await extractQuestions(qpImages);
         send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
 
-        // Stage 2: Extract handwritten answers WITH question context for accurate mapping
-        send({ type: 'progress', stage: 2, text: `Reading handwritten answers from ${asImages.length} page(s)...` });
-        const rawAnswers = await extractAnswers(asImages, questions);
+        // Stage 2: Extract handwritten answers and page layout lines WITH question context
+        send({ type: 'progress', stage: 2, text: `Reading handwritten answers and page layouts from ${asImages.length} page(s)...` });
+        const stage2Result = await extractAnswers(asImages, questions);
+        const rawAnswers = stage2Result.answers || [];
+        const pageLayouts = stage2Result.pageLayouts || [];
         send({ type: 'progress', stage: 2, text: `Extracted ${rawAnswers.length} student answers` });
 
         // Stage 3: Grade all questions with semantic mapping for OR pairs
@@ -768,14 +729,42 @@ export async function POST(request) {
           summary: finalSummary
         } = finalizeGradingAndSummary(questions, rawAnswers, rawGradingResult);
 
-        // Merge grading verdicts with spatial bbox data from Stage 2
-        // so the answer viewer can highlight the correct region on the sheet
+        // Merge grading verdicts with spatial bbox data computed from text anchors and line layouts
         const mergedAnswers = finalAnswers.map((graded) => {
           const rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
+          const pageNum = rawAns?.page || 1;
+          const layout = pageLayouts.find(l => l.page === pageNum);
+          const pageLines = layout?.lines || [];
+
+          // Find the next student answer on the same page based on line layout order
+          const samePageRawAnswers = rawAnswers.filter(a => a.page === pageNum && a.id !== rawAns?.id);
+          
+          let nextRawAns = null;
+          if (rawAns && samePageRawAnswers.length > 0) {
+            const cleanStart = cleanTextForMatch(rawAns.startAnchor);
+            const currentLineIdx = pageLines.findIndex(line => cleanTextForMatch(line.text).includes(cleanStart));
+            
+            if (currentLineIdx !== -1) {
+              let minDiff = Infinity;
+              samePageRawAnswers.forEach(otherAns => {
+                const otherCleanStart = cleanTextForMatch(otherAns.startAnchor);
+                const otherLineIdx = pageLines.findIndex(line => cleanTextForMatch(line.text).includes(otherCleanStart));
+                if (otherLineIdx > currentLineIdx && (otherLineIdx - currentLineIdx) < minDiff) {
+                  minDiff = otherLineIdx - currentLineIdx;
+                  nextRawAns = otherAns;
+                }
+              });
+            }
+          }
+
+          const bbox = rawAns
+            ? computeHighlightRegion(pageLines, rawAns.startAnchor, rawAns.endAnchor, nextRawAns?.startAnchor)
+            : { ymin: 10, xmin: 2, ymax: 25, xmax: 98 };
+
           return {
             ...graded,
-            page: rawAns?.page || 1,
-            bbox: rawAns?.bbox || { ymin: 0, xmin: 0, ymax: 10, xmax: 100 },
+            page: pageNum,
+            bbox,
             extractedText: rawAns?.extractedText || graded.extractedText || '',
           };
         });
