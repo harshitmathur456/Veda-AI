@@ -3,11 +3,17 @@ import { NextResponse } from 'next/server';
 
 // ─── Server-side only — Multi-key setup, never exposed to browser ────────────
 function getAIClients() {
-  const keys = [
-    { label: 'key-1', value: process.env.GEMINI_API_KEY_1 },
-    { label: 'key-2', value: process.env.GEMINI_API_KEY_2 },
-  ].filter(k => k.value && k.value.trim());
+  const keys = [];
 
+  // Dynamically discover all numbered GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3, etc.
+  for (let i = 1; i <= 10; i++) {
+    const val = process.env[`GEMINI_API_KEY_${i}`];
+    if (val && val.trim()) {
+      keys.push({ label: `key-${i}`, value: val.trim() });
+    }
+  }
+
+  // Also check standard / legacy keys if no numbered keys were found
   if (keys.length === 0) {
     const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
     if (legacyKey && legacyKey.trim()) {
@@ -24,8 +30,22 @@ function getAIClients() {
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash'];
 
-// In-memory set of keys that recently hit 429 quota limits, so subsequent calls skip dead keys immediately
-const exhaustedKeyLabels = new Set();
+// Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
+const exhaustedKeyTimestamps = new Map();
+
+function isKeyRecentlyExhausted(label) {
+  if (!exhaustedKeyTimestamps.has(label)) return false;
+  const timestamp = exhaustedKeyTimestamps.get(label);
+  if (Date.now() - timestamp > 60000) {
+    exhaustedKeyTimestamps.delete(label);
+    return false;
+  }
+  return true;
+}
+
+function markKeyAsExhausted(label) {
+  exhaustedKeyTimestamps.set(label, Date.now());
+}
 
 /**
  * Check if an error is a rate-limit / quota-exhausted error
@@ -62,7 +82,7 @@ function isQuotaOrRateLimitError(err) {
 async function callGeminiVision(contents, stageName = 'unknown') {
   const aiClients = getAIClients();
   if (aiClients.length === 0) {
-    throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1 and GEMINI_API_KEY_2 in .env.local');
+    throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3 in .env.local');
   }
 
   // Estimate payload size for diagnostics
@@ -72,8 +92,8 @@ async function callGeminiVision(contents, stageName = 'unknown') {
   const modelsToTry = [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)];
   let lastError;
 
-  // Prefer keys that haven't hit quota limits yet
-  const availableClients = aiClients.filter(c => !exhaustedKeyLabels.has(c.label));
+  // Prefer keys that haven't hit quota limits recently
+  const availableClients = aiClients.filter(c => !isKeyRecentlyExhausted(c.label));
   const clientsToTry = availableClients.length > 0 ? availableClients : aiClients;
 
   for (const { label: keyLabel, client: aiClient } of clientsToTry) {
@@ -108,7 +128,7 @@ async function callGeminiVision(contents, stageName = 'unknown') {
 
         if (isQuotaOrRateLimitError(err)) {
           console.warn(`[API][${stageName}] ${keyLabel} hit quota/rate limit — remembering as exhausted and switching to next key`);
-          exhaustedKeyLabels.add(keyLabel);
+          markKeyAsExhausted(keyLabel);
           hitQuotaOnThisKey = true;
           break; // skip remaining models for this key, try next key
         }
