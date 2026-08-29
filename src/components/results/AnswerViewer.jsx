@@ -300,7 +300,7 @@ export default function AnswerViewer({
               
               let colorScheme = {
                 badgeBg: 'bg-red-500',
-                borderUnselected: 'border-red-500/70 bg-red-500/10 hover:border-red-500 hover:bg-red-500/20',
+                borderUnselected: 'border-2 border-red-500/70 bg-red-500/10 hover:border-red-500 hover:bg-red-500/20',
                 borderSelected: 'border-2 border-red-500 bg-red-500/20 shadow-lg ring-2 ring-red-500/40',
                 Icon: XCircle
               };
@@ -308,14 +308,14 @@ export default function AnswerViewer({
               if (marks >= maxMarks || (maxMarks > 0 && (marks / maxMarks) >= 0.85)) {
                 colorScheme = {
                   badgeBg: 'bg-emerald-500',
-                  borderUnselected: 'border-emerald-500/70 bg-emerald-500/10 hover:border-emerald-500 hover:bg-emerald-500/20',
+                  borderUnselected: 'border-2 border-emerald-500/70 bg-emerald-500/10 hover:border-emerald-500 hover:bg-emerald-500/20',
                   borderSelected: 'border-2 border-emerald-500 bg-emerald-500/20 shadow-lg ring-2 ring-emerald-500/40',
                   Icon: CheckCircle2
                 };
               } else if (marks > 0) {
                 colorScheme = {
                   badgeBg: 'bg-amber-500',
-                  borderUnselected: 'border-amber-500/70 bg-amber-500/10 hover:border-amber-500 hover:bg-amber-500/20',
+                  borderUnselected: 'border-2 border-amber-500/70 bg-amber-500/10 hover:border-amber-500 hover:bg-amber-500/20',
                   borderSelected: 'border-2 border-amber-500 bg-amber-500/20 shadow-lg ring-2 ring-amber-500/40',
                   Icon: AlertCircle
                 };

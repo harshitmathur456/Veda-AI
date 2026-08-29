@@ -1,30 +1,29 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 
-// ─── Server-side only — Multi-key setup, never exposed to browser ────────────
+// ─── Server-side only — Use only GEMINI_API_KEY_4 for fast, dedicated calls ──
 function getAIClients() {
-  const keys = [];
+  // Always use GEMINI_API_KEY_4 as the primary (dedicated fast key)
+  const primaryKey = process.env.GEMINI_API_KEY_4;
+  if (primaryKey && primaryKey.trim()) {
+    return [{ label: 'key-4', client: new GoogleGenAI({ apiKey: primaryKey.trim() }) }];
+  }
 
-  // Dynamically discover all numbered GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3, etc.
-  for (let i = 1; i <= 10; i++) {
+  // Emergency fallback: try numbered keys 1-3 if key-4 is somehow missing
+  for (let i = 3; i >= 1; i--) {
     const val = process.env[`GEMINI_API_KEY_${i}`];
     if (val && val.trim()) {
-      keys.push({ label: `key-${i}`, value: val.trim() });
+      return [{ label: `key-${i}`, client: new GoogleGenAI({ apiKey: val.trim() }) }];
     }
   }
 
-  // Also check standard / legacy keys if no numbered keys were found
-  if (keys.length === 0) {
-    const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-    if (legacyKey && legacyKey.trim()) {
-      keys.push({ label: 'key-legacy', value: legacyKey.trim() });
-    }
+  // Last resort: legacy key
+  const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+  if (legacyKey && legacyKey.trim()) {
+    return [{ label: 'key-legacy', client: new GoogleGenAI({ apiKey: legacyKey.trim() }) }];
   }
 
-  return keys.map(k => ({
-    label: k.label,
-    client: new GoogleGenAI({ apiKey: k.value.trim() }),
-  }));
+  return [];
 }
 
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
