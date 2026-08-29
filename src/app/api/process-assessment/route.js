@@ -894,7 +894,7 @@ export async function POST(request) {
       } catch (err) {
         console.error('[API] Pipeline error:', err);
         const isQuota = isQuotaOrRateLimitError(err);
-        const errorMsg = isQuota ? 'Too many tokens used try again later' : (err.message || 'Unknown pipeline error');
+        const errorMsg = isQuota ? 'too many requests try again later' : (err.message || 'Unknown pipeline error');
         send({ type: 'error', error: errorMsg });
       }
 
