@@ -8,14 +8,17 @@ export default function ProcessingView({
   onRetry = null,
   onNewUpload = null,
 }) {
-  const isQuotaError = typeof error === 'string' && (
-    error.toLowerCase().includes('429') ||
-    error.toLowerCase().includes('quota') ||
-    error.toLowerCase().includes('resource_exhausted') ||
-    error.toLowerCase().includes('rate limit') ||
-    error.toLowerCase().includes('too many tokens') ||
-    error.toLowerCase().includes('too many requests')
-  );
+  const errStr = String(error || '').toLowerCase();
+  const isQuotaError =
+    errStr.includes('429') ||
+    errStr.includes('quota') ||
+    errStr.includes('resource_exhausted') ||
+    errStr.includes('rate limit') ||
+    errStr.includes('too many tokens') ||
+    errStr.includes('too many requests') ||
+    errStr.includes('exceeded') ||
+    errStr.includes('generativelanguage') ||
+    errStr.includes('free_tier');
 
   const displayError = isQuotaError ? 'Too many tokens used try again later' : error;
 

@@ -40,6 +40,10 @@ export async function processAssessmentWithGemini(qpImages, asImages, onProgress
 
     if (!response.ok) {
       const errText = await response.text();
+      const lower = errText.toLowerCase();
+      if (response.status === 429 || lower.includes('429') || lower.includes('quota') || lower.includes('resource_exhausted') || lower.includes('rate limit')) {
+        throw new Error('Too many tokens used try again later');
+      }
       throw new Error(`API returned ${response.status}: ${errText}`);
     }
 
