@@ -98,8 +98,15 @@ export default function ExamsPage() {
     } catch (error) {
       console.error('[ExamsPage] Pipeline processing failed:', error);
 
-      const errorMessage = error.message || 'Unknown pipeline error';
-      setPipelineError(`${errorMessage}. Please retry or upload different files.`);
+      const msg = (error.message || '').toLowerCase();
+      const isQuota = msg.includes('429') || msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('rate limit') || msg.includes('too many tokens') || msg.includes('too many requests');
+
+      if (isQuota) {
+        setPipelineError('Too many tokens used try again later');
+      } else {
+        const errorMessage = error.message || 'Unknown pipeline error';
+        setPipelineError(`${errorMessage}. Please retry or upload different files.`);
+      }
       // Stay on 'processing' view — ProcessingView will render the error card
     }
   };

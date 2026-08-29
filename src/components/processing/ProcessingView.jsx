@@ -8,7 +8,16 @@ export default function ProcessingView({
   onRetry = null,
   onNewUpload = null,
 }) {
-  const hasError = !!error;
+  const isQuotaError = typeof error === 'string' && (
+    error.toLowerCase().includes('429') ||
+    error.toLowerCase().includes('quota') ||
+    error.toLowerCase().includes('resource_exhausted') ||
+    error.toLowerCase().includes('rate limit') ||
+    error.toLowerCase().includes('too many tokens') ||
+    error.toLowerCase().includes('too many requests')
+  );
+
+  const displayError = isQuotaError ? 'Too many tokens used try again later' : error;
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center p-6 bg-slate-100">
@@ -33,7 +42,7 @@ export default function ProcessingView({
             </h2>
             
             <p className="text-sm font-medium text-slate-500 max-w-lg mb-8 leading-relaxed">
-              {error}
+              {displayError}
             </p>
 
             {/* Action Buttons */}
