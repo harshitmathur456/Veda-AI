@@ -759,7 +759,30 @@ export async function POST(request) {
 
         // Merge grading verdicts with spatial bbox data computed from text anchors and line layouts
         const mergedAnswers = finalAnswers.map((graded) => {
-          const rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
+          const isExcluded = graded.isExcludedAlternative || graded.status === 'excluded_alternative';
+          
+          // 1. Direct ID match
+          let rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
+
+          // 2. Sibling sub-part fallback match for attempted questions under the same option
+          if (!rawAns && !isExcluded && graded.questionId) {
+            const targetQ = questions.find(q => q.id === graded.questionId);
+            if (targetQ) {
+              const qNoStr = String(targetQ.qNo || '');
+              const targetOpt = (targetQ.alternativeOption || '').toLowerCase();
+
+              rawAns = rawAnswers.find(a => {
+                const aQ = questions.find(q => q.id === a.questionId || q.id === a.id);
+                if (aQ) {
+                  const aOpt = (aQ.alternativeOption || '').toLowerCase();
+                  return String(aQ.qNo || '') === qNoStr && (targetOpt ? aOpt === targetOpt : true);
+                }
+                const rawNoMatch = (a.questionId || '').match(/\d+/);
+                return rawNoMatch && rawNoMatch[0] === qNoStr;
+              });
+            }
+          }
+
           const pageNum = rawAns?.page || 1;
           const layout = pageLayouts.find(l => l.page === pageNum);
           const pageLines = layout?.lines || [];
@@ -783,7 +806,6 @@ export async function POST(request) {
             }
           }
 
-          const isExcluded = graded.isExcludedAlternative || graded.status === 'excluded_alternative';
           const bbox = (rawAns && !isExcluded)
             ? computeHighlightRegion(pageLines, rawAns.startAnchor, rawAns.endAnchor, nextRawAns?.startAnchor)
             : null;
