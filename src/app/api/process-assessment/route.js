@@ -244,7 +244,7 @@ function buildImageParts(pageImages) {
 
 function normalizeBbox(rawBbox) {
   if (!rawBbox || typeof rawBbox !== 'object') {
-    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+    return null;
   }
 
   let ymin = Number(rawBbox.ymin ?? rawBbox.y1 ?? rawBbox.top ?? 0);
@@ -253,7 +253,7 @@ function normalizeBbox(rawBbox) {
   let xmax = Number(rawBbox.xmax ?? rawBbox.x2 ?? rawBbox.right ?? 0);
 
   if (ymax === 0 && xmax === 0) {
-    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+    return null;
   }
 
   // Detect 0.0 - 1.0 normalized range
@@ -269,45 +269,31 @@ function normalizeBbox(rawBbox) {
     xmax = (xmax / 1000) * 100;
   }
 
-  ymin = Math.max(0, Math.min(ymin, 95));
-  xmin = Math.max(0, Math.min(xmin, 90));
-  ymax = Math.max(ymin + 4, Math.min(ymax, 100));
-  xmax = Math.max(xmin + 10, Math.min(xmax, 100));
+  // Reject invalid, near-zero area, or top-bar dummy strips
+  if (ymin >= ymax || xmin >= xmax || (ymax - ymin) < 1.5 || (xmax - xmin) < 3.0) {
+    return null;
+  }
+
+  if (ymin <= 1 && ymax <= 12 && xmin <= 2 && xmax >= 90) {
+    return null;
+  }
+
+  ymin = Math.max(0, Math.min(ymin, 98));
+  xmin = Math.max(0, Math.min(xmin, 95));
+  ymax = Math.max(ymin + 2, Math.min(ymax, 100));
+  xmax = Math.max(xmin + 5, Math.min(xmax, 100));
 
   return { ymin, xmin, ymax, xmax };
 }
 
 /**
- * Post-process: trim bounding boxes so consecutive answers on the same page
- * don't overlap.
+ * Post-process: sanitize bounding boxes without destructively crushing overlapping Y-ranges.
  */
-function trimOverlappingBboxes(answers) {
-  const normalizedAnswers = answers.map(a => ({
+function sanitizeAnswersBboxes(answers) {
+  return answers.map(a => ({
     ...a,
     bbox: normalizeBbox(a.bbox)
   }));
-
-  const byPage = {};
-  normalizedAnswers.forEach(a => {
-    const p = a.page || 1;
-    if (!byPage[p]) byPage[p] = [];
-    byPage[p].push(a);
-  });
-
-  Object.values(byPage).forEach(pageAnswers => {
-    pageAnswers.sort((a, b) => (a.bbox?.ymin || 0) - (b.bbox?.ymin || 0));
-    for (let i = 0; i < pageAnswers.length - 1; i++) {
-      const curr = pageAnswers[i];
-      const next = pageAnswers[i + 1];
-      if (curr.bbox && next.bbox && curr.bbox.ymax > next.bbox.ymin) {
-        // Leave a 1% gap between consecutive answer regions
-        const gap = 1;
-        curr.bbox.ymax = Math.max(curr.bbox.ymin + 4, next.bbox.ymin - gap);
-      }
-    }
-  });
-
-  return normalizedAnswers;
 }
 
 /**
@@ -655,8 +641,8 @@ Return ONLY the JSON array.`;
     throw new Error('Stage 2 failed: no answers extracted from response');
   }
 
-  // Post-process: trim overlapping bboxes so the answer viewer renders cleanly
-  return trimOverlappingBboxes(answers);
+  // Post-process: sanitize bboxes without destructively crushing Y-ranges
+  return sanitizeAnswersBboxes(answers);
 }
 
 
@@ -827,10 +813,11 @@ export async function POST(request) {
         // so the answer viewer can highlight the correct region on the sheet
         const mergedAnswers = finalAnswers.map((graded) => {
           const rawAns = rawAnswers.find(a => a.id === graded.id || normalizeId(a.questionId) === normalizeId(graded.questionId));
+          const normBbox = rawAns?.bbox ? normalizeBbox(rawAns.bbox) : null;
           return {
             ...graded,
-            page: rawAns?.page || 1,
-            bbox: rawAns?.bbox || { ymin: 0, xmin: 0, ymax: 10, xmax: 100 },
+            page: normBbox ? (rawAns?.page || 1) : null,
+            bbox: normBbox,
             extractedText: rawAns?.extractedText || graded.extractedText || '',
           };
         });

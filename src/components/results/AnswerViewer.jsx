@@ -10,7 +10,7 @@ import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2, FileQuestion 
  */
 function normalizeBbox(rawBbox) {
   if (!rawBbox || typeof rawBbox !== 'object') {
-    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+    return null;
   }
 
   let ymin = Number(rawBbox.ymin ?? rawBbox.y1 ?? rawBbox.top ?? 0);
@@ -18,31 +18,36 @@ function normalizeBbox(rawBbox) {
   let ymax = Number(rawBbox.ymax ?? rawBbox.y2 ?? rawBbox.bottom ?? 0);
   let xmax = Number(rawBbox.xmax ?? rawBbox.x2 ?? rawBbox.right ?? 0);
 
-  // If bbox is empty/unspecified, provide a reasonable fallback
   if (ymax === 0 && xmax === 0) {
-    return { ymin: 5, xmin: 5, ymax: 25, xmax: 95 };
+    return null;
   }
 
-  // Detect 0.0 - 1.0 normalized range (e.g., ymin: 0.12, ymax: 0.28)
+  // Detect 0.0 - 1.0 normalized range
   if (ymax <= 1.0 && xmax <= 1.0 && (ymax > 0 || xmax > 0)) {
     ymin *= 100;
     xmin *= 100;
     ymax *= 100;
     xmax *= 100;
-  }
-  // Detect 0 - 1000 range (e.g., ymin: 120, ymax: 280)
-  else if (ymax > 100 || xmax > 100) {
+  } else if (ymax > 100 || xmax > 100) {
     ymin = (ymin / 1000) * 100;
     xmin = (xmin / 1000) * 100;
     ymax = (ymax / 1000) * 100;
     xmax = (xmax / 1000) * 100;
   }
 
-  // Ensure valid rectangular boundaries
-  ymin = Math.max(0, Math.min(ymin, 95));
-  xmin = Math.max(0, Math.min(xmin, 90));
-  ymax = Math.max(ymin + 4, Math.min(ymax, 100)); // at least 4% height
-  xmax = Math.max(xmin + 10, Math.min(xmax, 100)); // at least 10% width
+  // Reject invalid, near-zero area, or top-bar dummy strips
+  if (ymin >= ymax || xmin >= xmax || (ymax - ymin) < 1.5 || (xmax - xmin) < 3.0) {
+    return null;
+  }
+
+  if (ymin <= 1 && ymax <= 12 && xmin <= 2 && xmax >= 90) {
+    return null;
+  }
+
+  ymin = Math.max(0, Math.min(ymin, 98));
+  xmin = Math.max(0, Math.min(xmin, 95));
+  ymax = Math.max(ymin + 2, Math.min(ymax, 100));
+  xmax = Math.max(xmin + 5, Math.min(xmax, 100));
 
   return { ymin, xmin, ymax, xmax };
 }
@@ -187,7 +192,12 @@ export default function AnswerViewer({
     }
   }, [selectedQuestionId, activeAnswer, totalPages]);
 
-  const answersForCurrentPage = answers.filter(a => (a.page || 1) === currentPage);
+  const answersForCurrentPage = answers.filter(a => {
+    if (!a || a.isExcludedAlternative || a.status === 'unanswered' || !a.page || a.page !== currentPage) {
+      return false;
+    }
+    return normalizeBbox(a.bbox) !== null;
+  });
 
   const getQuestionLabel = useCallback((qId) => {
     const q = questions.find(item => item.id === qId);
@@ -271,14 +281,15 @@ export default function AnswerViewer({
           {/* Highlight Overlay Layer for Bounding Boxes */}
           <div className="absolute inset-0 pointer-events-none z-20">
             {answersForCurrentPage.map((ans) => {
+              const bbox = normalizeBbox(ans.bbox);
+              if (!bbox) return null;
               const isSelected = selectedQuestionId === ans.questionId;
               const label = getQuestionLabel(ans.questionId);
-              const bbox = normalizeBbox(ans.bbox);
 
               const top = `${bbox.ymin}%`;
               const left = `${bbox.xmin}%`;
-              const height = `${Math.max(4, bbox.ymax - bbox.ymin)}%`;
-              const width = `${Math.max(10, bbox.xmax - bbox.xmin)}%`;
+              const height = `${Math.max(2, bbox.ymax - bbox.ymin)}%`;
+              const width = `${Math.max(5, bbox.xmax - bbox.xmin)}%`;
 
               return (
                 <div
