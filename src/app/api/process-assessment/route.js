@@ -769,12 +769,21 @@ async function extractQuestions(qpImages, qpText = null) {
 
 // ─── Stage 2: Extract Handwritten Answers ────────────────────────────────
 
-async function extractAnswers(asImages, questions) {
-  const questionsSummary = questions.map(q =>
-    `Q${q.qNo}${q.subPart || ''} (id: ${q.id}): "${q.text.substring(0, 100)}"`
-  ).join('\n');
+function getAnswersResult(responseText) {
+  const result = extractJSON(responseText);
+  if (!result || !Array.isArray(result.answers)) return null;
+  return {
+    answers: result.answers,
+    pageLayouts: Array.isArray(result.pageLayouts) ? result.pageLayouts : [],
+  };
+}
 
-  const prompt = `You are an expert at reading handwritten student answer sheets. Analyze the attached handwritten answer sheet image(s).
+function buildAnswerExtractionPrompt(questionsSummary, pageNumber = null) {
+  const pageScope = pageNumber === null
+    ? 'Analyze all attached handwritten answer-sheet images.'
+    : `Analyze only attached answer-sheet page ${pageNumber}. Every answer and layout object you return must use "page": ${pageNumber}.`;
+
+  return `You are an expert at reading handwritten student answer sheets. ${pageScope}
 
 Here are the questions from the question paper:
 ${questionsSummary}
@@ -796,6 +805,44 @@ You must output a single valid JSON object with exactly two keys: "answers" and 
      - "y": Approximate vertical percentage position of this line on the page (an integer between 0 and 100, where 0 is the top edge and 100 is the bottom).
 
 Return ONLY the JSON object. Do not include markdown fences or explanation.`;
+}
+
+async function extractAnswersPageByPage(asImages, questionsSummary) {
+  const answers = [];
+  const pageLayouts = [];
+
+  for (const image of asImages) {
+    const pageNumber = Number(image.page) || pageLayouts.length + 1;
+    console.warn(`[API][Stage2] Retrying answer extraction for page ${pageNumber} only`);
+    const response = await callGeminiVision([
+      {
+        role: 'user',
+        parts: [
+          { text: buildAnswerExtractionPrompt(questionsSummary, pageNumber) },
+          ...buildImageParts([image]),
+        ],
+      },
+    ], `Stage2-ExtractAnswers-Page${pageNumber}`, { maxOutputTokens: 8192 });
+
+    const pageResult = getAnswersResult(response.text);
+    if (!pageResult) {
+      console.error(`[API][Stage2] Page ${pageNumber} retry returned no parseable answers:`, response.text);
+      continue;
+    }
+
+    answers.push(...pageResult.answers.map(answer => ({ ...answer, page: answer.page || pageNumber })));
+    pageLayouts.push(...pageResult.pageLayouts.map(layout => ({ ...layout, page: layout.page || pageNumber })));
+  }
+
+  return { answers, pageLayouts };
+}
+
+async function extractAnswers(asImages, questions) {
+  const questionsSummary = questions.map(q =>
+    `Q${q.qNo}${q.subPart || ''} (id: ${q.id}): "${q.text.substring(0, 100)}"`
+  ).join('\n');
+
+  const prompt = buildAnswerExtractionPrompt(questionsSummary);
 
   const imageParts = buildImageParts(asImages);
 
@@ -803,8 +850,16 @@ Return ONLY the JSON object. Do not include markdown fences or explanation.`;
     { role: 'user', parts: [{ text: prompt }, ...imageParts] }
   ], 'Stage2-ExtractAnswers', { maxOutputTokens: 8192 });
 
-  const result = extractJSON(response.text);
-  if (!result || !Array.isArray(result.answers)) {
+  let result = getAnswersResult(response.text);
+  if (!result) {
+    console.error('[API][Stage2] Full answer-sheet response contained no parseable answers:', response.text);
+    // A complete transcription plus line layout can exceed one response for a
+    // multi-page handwritten sheet. Retrying one page at a time keeps each
+    // response bounded while retaining the page-specific layout data.
+    result = await extractAnswersPageByPage(asImages, questionsSummary);
+  }
+
+  if (!result || !Array.isArray(result.answers) || result.answers.length === 0) {
     throw new Error('Stage 2 failed: no answers extracted from response');
   }
 
