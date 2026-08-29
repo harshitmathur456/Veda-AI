@@ -28,7 +28,7 @@ function getAIClients() {
 }
 
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash'];
+const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite'];
 
 // Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
 const exhaustedKeyTimestamps = new Map();
@@ -486,7 +486,7 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
   }));
 
   const processedAnswers = gradedAnswers.map(g => {
-    const qId = g.questionId || g.id?.replace(/^ans_/, '');
+    const qId = g.questionId;
     const isExcluded = excludedQIds.has(qId);
     return {
       ...g,
@@ -502,7 +502,7 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
   const totalMarksObtained = activeAnswers.reduce((sum, a) => sum + (Number(a.marks) || 0), 0);
   const percentage = totalMaxMarks > 0 ? Number(((totalMarksObtained / totalMaxMarks) * 100).toFixed(1)) : 0;
 
-  const answeredQIds = new Set(activeAnswers.map(a => a.questionId || a.id?.replace(/^ans_/, '')));
+  const answeredQIds = new Set(activeAnswers.map(a => a.questionId));
   const attemptedCount = activeQuestions.filter(q => answeredQIds.has(q.id)).length;
   const totalQuestions = activeQuestions.length;
   const unansweredCount = totalQuestions - attemptedCount;
@@ -802,14 +802,15 @@ export async function POST(request) {
       };
 
       try {
-        // Stage 1 & Stage 2: Extract questions and handwritten answers in parallel
-        send({ type: 'progress', stage: 1, text: 'Extracting questions & handwritten answers in parallel...' });
-        const [rawQuestions, rawAnswers] = await Promise.all([
-          extractQuestions(qpImages),
-          extractAnswers(asImages)
-        ]);
-        const questions = detectAndTagAlternativeGroups(rawQuestions);
-        send({ type: 'progress', stage: 2, text: `Extracted ${questions.length} questions & ${rawAnswers.length} student answers` });
+        // Stage 1: Extract questions from question paper
+        send({ type: 'progress', stage: 1, text: 'Extracting questions from question paper...' });
+        const questions = await extractQuestions(qpImages);
+        send({ type: 'progress', stage: 1, text: `Extracted ${questions.length} questions` });
+
+        // Stage 2: Extract handwritten answers WITH question context for accurate mapping
+        send({ type: 'progress', stage: 2, text: `Reading handwritten answers from ${asImages.length} page(s)...` });
+        const rawAnswers = await extractAnswers(asImages, questions);
+        send({ type: 'progress', stage: 2, text: `Extracted ${rawAnswers.length} student answers` });
 
         // Stage 3: Grade all questions with semantic mapping for OR pairs
         send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
