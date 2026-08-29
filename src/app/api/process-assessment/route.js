@@ -621,8 +621,8 @@ Return ONLY a valid JSON array:
 ]
 
 Rules:
-- "id": "ans_" + question id (e.g. "ans_q1", "ans_q11_a")
-- "questionId": must match a question id from above
+- "id": "ans_" + question id (e.g. "ans_q1", "ans_q11_a", "ans_q18_ai", "ans_q18_b")
+- "questionId": must match a question id from above. IMPORTANT: For Q18 and Q21, pay close attention to whether the handwritten text is Option A (e.g. seed dormancy / pea vs castor seed → q18_ai/q18_aii) OR Option B (e.g. follicle stage → q18_b). Match the exact questionId from the input list.
 - "page": which answer sheet page (1-indexed)
 - "bbox": percentage coordinates (0-100). ymin=top, ymax=bottom, xmin=left, xmax=right. TIGHT fit only.
 - "extractedText": FULL transcription of the handwritten answer. For diagrams: "[Diagram: description]"

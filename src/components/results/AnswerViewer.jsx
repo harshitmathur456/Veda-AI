@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2, FileQuestion } from 'lucide-react';
+import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2, XCircle, AlertCircle, FileQuestion } from 'lucide-react';
 
 /**
  * Normalizes bounding box coordinates from any AI output scale
@@ -291,6 +291,38 @@ export default function AnswerViewer({
               const height = `${Math.max(2, bbox.ymax - bbox.ymin)}%`;
               const width = `${Math.max(5, bbox.xmax - bbox.xmin)}%`;
 
+              // Dynamic color coding based on actual awarded marks:
+              // 0 marks -> RED (bg-red-500, border-red-500)
+              // Partial marks -> AMBER (bg-amber-500, border-amber-500)
+              // Full/Correct marks -> GREEN (bg-emerald-500, border-emerald-500)
+              const marks = Number(ans.marks ?? 0);
+              const maxMarks = Number(ans.maxMarks ?? 1);
+              
+              let colorScheme = {
+                badgeBg: 'bg-red-500',
+                borderUnselected: 'border-red-500/70 bg-red-500/10 hover:border-red-500 hover:bg-red-500/20',
+                borderSelected: 'border-2 border-red-500 bg-red-500/20 shadow-lg ring-2 ring-red-500/40',
+                Icon: XCircle
+              };
+
+              if (marks >= maxMarks || (maxMarks > 0 && (marks / maxMarks) >= 0.85)) {
+                colorScheme = {
+                  badgeBg: 'bg-emerald-500',
+                  borderUnselected: 'border-emerald-500/70 bg-emerald-500/10 hover:border-emerald-500 hover:bg-emerald-500/20',
+                  borderSelected: 'border-2 border-emerald-500 bg-emerald-500/20 shadow-lg ring-2 ring-emerald-500/40',
+                  Icon: CheckCircle2
+                };
+              } else if (marks > 0) {
+                colorScheme = {
+                  badgeBg: 'bg-amber-500',
+                  borderUnselected: 'border-amber-500/70 bg-amber-500/10 hover:border-amber-500 hover:bg-amber-500/20',
+                  borderSelected: 'border-2 border-amber-500 bg-amber-500/20 shadow-lg ring-2 ring-amber-500/40',
+                  Icon: AlertCircle
+                };
+              }
+
+              const { badgeBg, borderUnselected, borderSelected, Icon } = colorScheme;
+
               return (
                 <div
                   key={ans.id || ans.questionId}
@@ -301,16 +333,14 @@ export default function AnswerViewer({
                   }}
                   style={{ top, left, height, width }}
                   className={`absolute rounded-xl transition-all duration-200 pointer-events-auto cursor-pointer p-1.5 ${
-                    isSelected
-                      ? 'border-2 border-[#22C55E] bg-[#22C55E]/15 shadow-lg ring-2 ring-[#22C55E]/30'
-                      : 'border-2 border-emerald-500/60 bg-emerald-500/10 hover:border-emerald-500 hover:bg-emerald-500/20'
+                    isSelected ? borderSelected : borderUnselected
                   }`}
                 >
                   {/* Tag Badge */}
                   <div className="absolute -top-3 left-2 z-30">
-                    <span className="px-2 py-0.5 rounded-md text-[11px] font-black bg-[#22C55E] text-white shadow-md flex items-center gap-1">
+                    <span className={`px-2 py-0.5 rounded-md text-[11px] font-black ${badgeBg} text-white shadow-md flex items-center gap-1`}>
                       {label}
-                      {isSelected && <CheckCircle2 className="w-3 h-3 text-white" />}
+                      <Icon className="w-3 h-3 text-white" />
                     </span>
                   </div>
                 </div>
