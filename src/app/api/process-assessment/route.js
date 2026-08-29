@@ -241,58 +241,28 @@ function buildImageParts(pageImages) {
   });
 }
 
-function normalizeBbox(rawBbox) {
-  if (!rawBbox || typeof rawBbox !== 'object') {
-    return null;
-  }
+function trimOverlappingBboxes(answers) {
+  const byPage = {};
+  answers.forEach(a => {
+    const p = a.page || 1;
+    if (!byPage[p]) byPage[p] = [];
+    byPage[p].push(a);
+  });
 
-  let ymin = Number(rawBbox.ymin ?? rawBbox.y1 ?? rawBbox.top ?? 0);
-  let xmin = Number(rawBbox.xmin ?? rawBbox.x1 ?? rawBbox.left ?? 0);
-  let ymax = Number(rawBbox.ymax ?? rawBbox.y2 ?? rawBbox.bottom ?? 0);
-  let xmax = Number(rawBbox.xmax ?? rawBbox.x2 ?? rawBbox.right ?? 0);
+  Object.values(byPage).forEach(pageAnswers => {
+    pageAnswers.sort((a, b) => (a.bbox?.ymin || 0) - (b.bbox?.ymin || 0));
+    for (let i = 0; i < pageAnswers.length - 1; i++) {
+      const curr = pageAnswers[i];
+      const next = pageAnswers[i + 1];
+      if (curr.bbox && next.bbox && curr.bbox.ymax > next.bbox.ymin) {
+        // Leave a 1% gap between consecutive answer regions
+        const gap = 1;
+        curr.bbox.ymax = Math.max(curr.bbox.ymin + 2, next.bbox.ymin - gap);
+      }
+    }
+  });
 
-  if (ymax === 0 && xmax === 0) {
-    return null;
-  }
-
-  // Detect 0.0 - 1.0 normalized range
-  if (ymax <= 1.0 && xmax <= 1.0 && (ymax > 0 || xmax > 0)) {
-    ymin *= 100;
-    xmin *= 100;
-    ymax *= 100;
-    xmax *= 100;
-  } else if (ymax > 100 || xmax > 100) {
-    ymin = (ymin / 1000) * 100;
-    xmin = (xmin / 1000) * 100;
-    ymax = (ymax / 1000) * 100;
-    xmax = (xmax / 1000) * 100;
-  }
-
-  // Reject invalid, near-zero area, or top-bar dummy strips
-  if (ymin >= ymax || xmin >= xmax || (ymax - ymin) < 1.5 || (xmax - xmin) < 3.0) {
-    return null;
-  }
-
-  if (ymin <= 1 && ymax <= 12 && xmin <= 2 && xmax >= 90) {
-    return null;
-  }
-
-  ymin = Math.max(0, Math.min(ymin, 98));
-  xmin = Math.max(0, Math.min(xmin, 95));
-  ymax = Math.max(ymin + 2, Math.min(ymax, 100));
-  xmax = Math.max(xmin + 5, Math.min(xmax, 100));
-
-  return { ymin, xmin, ymax, xmax };
-}
-
-/**
- * Post-process: sanitize bounding boxes without destructively crushing overlapping Y-ranges.
- */
-function sanitizeAnswersBboxes(answers) {
-  return answers.map(a => ({
-    ...a,
-    bbox: normalizeBbox(a.bbox)
-  }));
+  return answers;
 }
 
 /**
@@ -373,22 +343,6 @@ function normalizeCanonicalQuestions(rawQuestions) {
     };
   });
 }
-
-function normalizeId(idStr) {
-  if (!idStr) return '';
-  let s = String(idStr).trim().toLowerCase();
-  s = s.replace(/^ans_/, '');
-  
-  const numMatch = s.match(/\d+/);
-  if (!numMatch) return s;
-  
-  const num = numMatch[0];
-  let rest = s.substring(s.indexOf(num) + num.length);
-  rest = rest.replace(/[^a-z0-9]/g, '');
-  
-  return `q${num}${rest ? `_${rest}` : ''}`;
-}
-
 /**
  * Finalize grading results and compute deterministic summary math.
  * Resolves OR alternative questions based on actual semantic matching and graded scores.
@@ -396,7 +350,7 @@ function normalizeId(idStr) {
 function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
   const gradedAnswers = (gradingResult.gradedAnswers || []).map(g => ({
     ...g,
-    questionId: normalizeId(g.questionId || g.id)
+    questionId: g.questionId || g.id?.replace(/^ans_/, '')
   }));
 
   // Group questions by alternativeGroupId
@@ -585,10 +539,10 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
 
 // ─── Stage 2: Extract Handwritten Answers ────────────────────────────────
 
-async function extractAnswers(asImages, questions = []) {
-  const questionsSummary = questions?.length > 0 ? questions.map(q =>
+async function extractAnswers(asImages, questions) {
+  const questionsSummary = questions.map(q =>
     `Q${q.qNo}${q.subPart || ''} (id: ${q.id}): "${q.text.substring(0, 100)}"`
-  ).join('\n') : '';
+  ).join('\n');
 
   /**
    * The bbox instructions are critical for the answer viewer overlay.
@@ -596,10 +550,13 @@ async function extractAnswers(asImages, questions = []) {
    * so the highlight rectangles don't overlap on the answer sheet image.
    */
   const prompt = `You are an expert at reading handwritten student answer sheets. Analyze the attached handwritten answer sheet image(s).
-${questionsSummary ? `Here are the questions from the question paper:\n${questionsSummary}\n` : ''}
+
+Here are the questions from the question paper:
+${questionsSummary}
+
 For EACH handwritten answer visible on the answer sheet:
 1. Read the handwritten text carefully, even if messy.
-2. Identify the question number the student wrote (e.g. Q1 -> "q1", Q2 -> "q2", Q11(a) -> "q11_a", Q18(a) -> "q18_a", Q18(b) -> "q18_b").
+2. Match it to the correct question by the question number the student wrote, or by content.
 3. Estimate a TIGHT bounding box for that answer as percentage coordinates (0-100).
 
 CRITICAL bounding box rules:
@@ -620,8 +577,8 @@ Return ONLY a valid JSON array:
 ]
 
 Rules:
-- "id": "ans_" + question id (e.g. "ans_q1", "ans_q11_a", "ans_q18_ai", "ans_q18_b")
-- "questionId": must match a question id from above. IMPORTANT: For Q18 and Q21, pay close attention to whether the handwritten text is Option A (e.g. seed dormancy / pea vs castor seed → q18_ai/q18_aii) OR Option B (e.g. follicle stage → q18_b). Match the exact questionId from the input list.
+- "id": "ans_" + question id (e.g. "ans_q1", "ans_q11_a")
+- "questionId": must match a question id from above
 - "page": which answer sheet page (1-indexed)
 - "bbox": percentage coordinates (0-100). ymin=top, ymax=bottom, xmin=left, xmax=right. TIGHT fit only.
 - "extractedText": FULL transcription of the handwritten answer. For diagrams: "[Diagram: description]"
@@ -640,8 +597,8 @@ Return ONLY the JSON array.`;
     throw new Error('Stage 2 failed: no answers extracted from response');
   }
 
-  // Post-process: sanitize bboxes without destructively crushing Y-ranges
-  return sanitizeAnswersBboxes(answers);
+  // Post-process: trim overlapping bboxes so the answer viewer renders cleanly
+  return trimOverlappingBboxes(answers);
 }
 
 
@@ -811,40 +768,14 @@ export async function POST(request) {
           summary: finalSummary
         } = finalizeGradingAndSummary(questions, rawAnswers, rawGradingResult);
 
-        // Track raw answer IDs that have already been matched to avoid duplicate bbox assignment
-        const usedRawIds = new Set();
-
+        // Merge grading verdicts with spatial bbox data from Stage 2
+        // so the answer viewer can highlight the correct region on the sheet
         const mergedAnswers = finalAnswers.map((graded) => {
-          // 1. Direct ID match
-          let rawAns = rawAnswers.find(a => !usedRawIds.has(a.id) && a.id === graded.id);
-
-          // 2. Normalized Question ID match
-          if (!rawAns) {
-            rawAns = rawAnswers.find(a => !usedRawIds.has(a.id) && normalizeId(a.questionId) === normalizeId(graded.questionId));
-          }
-
-          // 3. Fallback match: same main question number (qNo)
-          if (!rawAns) {
-            const qNoMatch = (graded.questionId || '').match(/\d+/);
-            if (qNoMatch) {
-              const qNo = qNoMatch[0];
-              rawAns = rawAnswers.find(a => {
-                if (usedRawIds.has(a.id)) return false;
-                const rawNum = (a.questionId || '').match(/\d+/)?.[0];
-                return rawNum === qNo;
-              });
-            }
-          }
-
-          if (rawAns?.id) {
-            usedRawIds.add(rawAns.id);
-          }
-
-          const normBbox = rawAns?.bbox ? normalizeBbox(rawAns.bbox) : null;
+          const rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
           return {
             ...graded,
-            page: normBbox ? (rawAns?.page || 1) : null,
-            bbox: normBbox,
+            page: rawAns?.page || 1,
+            bbox: rawAns?.bbox || { ymin: 0, xmin: 0, ymax: 10, xmax: 100 },
             extractedText: rawAns?.extractedText || graded.extractedText || '',
           };
         });

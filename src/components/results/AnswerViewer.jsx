@@ -1,56 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2, XCircle, AlertCircle, FileQuestion } from 'lucide-react';
-
-/**
- * Normalizes bounding box coordinates from any AI output scale
- * (normalized 0.0-1.0, 0-100 percentage, or 0-1000 integer scale)
- * into a consistent 0-100 percentage format.
- */
-function normalizeBbox(rawBbox) {
-  if (!rawBbox || typeof rawBbox !== 'object') {
-    return null;
-  }
-
-  let ymin = Number(rawBbox.ymin ?? rawBbox.y1 ?? rawBbox.top ?? 0);
-  let xmin = Number(rawBbox.xmin ?? rawBbox.x1 ?? rawBbox.left ?? 0);
-  let ymax = Number(rawBbox.ymax ?? rawBbox.y2 ?? rawBbox.bottom ?? 0);
-  let xmax = Number(rawBbox.xmax ?? rawBbox.x2 ?? rawBbox.right ?? 0);
-
-  if (ymax === 0 && xmax === 0) {
-    return null;
-  }
-
-  // Detect 0.0 - 1.0 normalized range
-  if (ymax <= 1.0 && xmax <= 1.0 && (ymax > 0 || xmax > 0)) {
-    ymin *= 100;
-    xmin *= 100;
-    ymax *= 100;
-    xmax *= 100;
-  } else if (ymax > 100 || xmax > 100) {
-    ymin = (ymin / 1000) * 100;
-    xmin = (xmin / 1000) * 100;
-    ymax = (ymax / 1000) * 100;
-    xmax = (xmax / 1000) * 100;
-  }
-
-  // Reject invalid, near-zero area, or top-bar dummy strips
-  if (ymin >= ymax || xmin >= xmax || (ymax - ymin) < 1.5 || (xmax - xmin) < 3.0) {
-    return null;
-  }
-
-  if (ymin <= 1 && ymax <= 12 && xmin <= 2 && xmax >= 90) {
-    return null;
-  }
-
-  ymin = Math.max(0, Math.min(ymin, 98));
-  xmin = Math.max(0, Math.min(xmin, 95));
-  ymax = Math.max(ymin + 2, Math.min(ymax, 100));
-  xmax = Math.max(xmin + 5, Math.min(xmax, 100));
-
-  return { ymin, xmin, ymax, xmax };
-}
+import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, CheckCircle2, FileQuestion } from 'lucide-react';
 
 /**
  * Renders an answer sheet page either as an image or by rendering a raw PDF to canvas.
@@ -192,12 +143,7 @@ export default function AnswerViewer({
     }
   }, [selectedQuestionId, activeAnswer, totalPages]);
 
-  const answersForCurrentPage = answers.filter(a => {
-    if (!a || a.isExcludedAlternative || a.status === 'unanswered' || !a.page || a.page !== currentPage) {
-      return false;
-    }
-    return normalizeBbox(a.bbox) !== null;
-  });
+  const answersForCurrentPage = answers.filter(a => a.page === currentPage && a.bbox);
 
   const getQuestionLabel = useCallback((qId) => {
     const q = questions.find(item => item.id === qId);
@@ -281,47 +227,13 @@ export default function AnswerViewer({
           {/* Highlight Overlay Layer for Bounding Boxes */}
           <div className="absolute inset-0 pointer-events-none z-20">
             {answersForCurrentPage.map((ans) => {
-              const bbox = normalizeBbox(ans.bbox);
-              if (!bbox) return null;
               const isSelected = selectedQuestionId === ans.questionId;
               const label = getQuestionLabel(ans.questionId);
 
-              const top = `${bbox.ymin}%`;
-              const left = `${bbox.xmin}%`;
-              const height = `${Math.max(2, bbox.ymax - bbox.ymin)}%`;
-              const width = `${Math.max(5, bbox.xmax - bbox.xmin)}%`;
-
-              // Dynamic color coding based on actual awarded marks:
-              // 0 marks -> RED (bg-red-500, border-red-500)
-              // Partial marks -> AMBER (bg-amber-500, border-amber-500)
-              // Full/Correct marks -> GREEN (bg-emerald-500, border-emerald-500)
-              const marks = Number(ans.marks ?? 0);
-              const maxMarks = Number(ans.maxMarks ?? 1);
-              
-              let colorScheme = {
-                badgeBg: 'bg-red-500',
-                borderUnselected: 'border-2 border-red-500/70 bg-red-500/10 hover:border-red-500 hover:bg-red-500/20',
-                borderSelected: 'border-2 border-red-500 bg-red-500/20 shadow-lg ring-2 ring-red-500/40',
-                Icon: XCircle
-              };
-
-              if (marks >= maxMarks || (maxMarks > 0 && (marks / maxMarks) >= 0.85)) {
-                colorScheme = {
-                  badgeBg: 'bg-emerald-500',
-                  borderUnselected: 'border-2 border-emerald-500/70 bg-emerald-500/10 hover:border-emerald-500 hover:bg-emerald-500/20',
-                  borderSelected: 'border-2 border-emerald-500 bg-emerald-500/20 shadow-lg ring-2 ring-emerald-500/40',
-                  Icon: CheckCircle2
-                };
-              } else if (marks > 0) {
-                colorScheme = {
-                  badgeBg: 'bg-amber-500',
-                  borderUnselected: 'border-2 border-amber-500/70 bg-amber-500/10 hover:border-amber-500 hover:bg-amber-500/20',
-                  borderSelected: 'border-2 border-amber-500 bg-amber-500/20 shadow-lg ring-2 ring-amber-500/40',
-                  Icon: AlertCircle
-                };
-              }
-
-              const { badgeBg, borderUnselected, borderSelected, Icon } = colorScheme;
+              const top = `${ans.bbox.ymin}%`;
+              const left = `${ans.bbox.xmin}%`;
+              const height = `${ans.bbox.ymax - ans.bbox.ymin}%`;
+              const width = `${ans.bbox.xmax - ans.bbox.xmin}%`;
 
               return (
                 <div
@@ -332,15 +244,17 @@ export default function AnswerViewer({
                     if (ans.questionId) onSelectAnswer(ans.questionId);
                   }}
                   style={{ top, left, height, width }}
-                  className={`absolute rounded-xl transition-all duration-200 pointer-events-auto cursor-pointer p-1.5 ${
-                    isSelected ? borderSelected : borderUnselected
+                  className={`absolute rounded-xl transition-all duration-300 pointer-events-auto cursor-pointer p-1.5 ${
+                    isSelected
+                      ? 'border-2 border-[#22C55E] bg-[#22C55E]/10 shadow-lg ring-2 ring-[#22C55E]/20'
+                      : 'border-2 border-emerald-500/60 bg-emerald-500/5 hover:border-emerald-500'
                   }`}
                 >
                   {/* Tag Badge */}
                   <div className="absolute -top-3 left-2 z-30">
-                    <span className={`px-2 py-0.5 rounded-md text-[11px] font-black ${badgeBg} text-white shadow-md flex items-center gap-1`}>
+                    <span className="px-2.5 py-0.5 rounded-md text-xs font-black bg-[#22C55E] text-white shadow-md flex items-center gap-1">
                       {label}
-                      <Icon className="w-3 h-3 text-white" />
+                      {isSelected && <CheckCircle2 className="w-3 h-3 text-white" />}
                     </span>
                   </div>
                 </div>
