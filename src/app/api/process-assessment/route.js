@@ -336,7 +336,39 @@ function detectAndTagAlternativeGroups(questions) {
   }));
 }
 
-/**
+function normalizeCanonicalQuestions(rawQuestions) {
+  const seenIds = new Map();
+
+  return rawQuestions.map((q, idx) => {
+    const qNo = String(q.qNo || idx + 1).trim();
+    let sub = (q.subPart || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    let opt = (q.alternativeOption || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    let baseId = `q${qNo}`;
+    if (sub) {
+      baseId += `_${sub}`;
+    } else if (opt && q.isAlternativeGroup) {
+      baseId += `_${opt}`;
+    }
+
+    let finalId = baseId;
+    if (seenIds.has(baseId)) {
+      const count = seenIds.get(baseId) + 1;
+      seenIds.set(baseId, count);
+      finalId = `${baseId}_${count}`;
+    } else {
+      seenIds.set(baseId, 1);
+    }
+
+    return {
+      ...q,
+      id: finalId,
+      qNo: String(q.qNo || idx + 1),
+      maxMarks: Number(q.maxMarks) || 1
+    };
+  });
+}
+
 /**
  * Finalize grading results and compute deterministic summary math.
  * Resolves OR alternative questions based on actual semantic matching and graded scores.
@@ -523,7 +555,8 @@ Return ONLY the JSON array. No explanation, no markdown fences.`;
     throw new Error('Stage 1 failed: no questions extracted from response');
   }
 
-  return detectAndTagAlternativeGroups(questions);
+  const taggedQuestions = detectAndTagAlternativeGroups(questions);
+  return normalizeCanonicalQuestions(taggedQuestions);
 }
 
 

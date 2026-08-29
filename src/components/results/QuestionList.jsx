@@ -66,10 +66,10 @@ export default function QuestionList({
           const ans = answerMap.get(q.id);
 
           // Score Pill color coding strictly based on numeric marks ratio:
-          // 0 marks -> RED (#FEE2E2 / #B91C1C)
-          // Partial marks -> AMBER (#FEF3C7 / #B45309)
-          // Full marks -> GREEN (#DCFCE7 / #15803D)
-          let badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold border border-red-200';
+          // 0 marks -> SOLID RED (bg-red-500 text-white)
+          // Partial marks -> SOLID AMBER (bg-amber-500 text-white)
+          // Full marks -> SOLID GREEN (bg-emerald-500 text-white)
+          let badgeBg = 'bg-red-500 text-white font-black shadow-xs';
           let scoreText = `0/${q.maxMarks || 1}`;
 
           if (q.isExcludedAlternative) {
@@ -81,15 +81,15 @@ export default function QuestionList({
             scoreText = `${marks}/${maxMarks}`;
 
             if (marks <= 0) {
-              badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold border border-red-200'; // Red for 0 score
+              badgeBg = 'bg-red-500 text-white font-black shadow-xs'; // Solid Bold Red
             } else if (marks >= maxMarks || (marks / maxMarks) >= 0.85) {
-              badgeBg = 'bg-[#DCFCE7] text-[#15803D] font-extrabold border border-emerald-200'; // Green for full marks
+              badgeBg = 'bg-emerald-500 text-white font-black shadow-xs'; // Solid Bold Green
             } else {
-              badgeBg = 'bg-[#FEF3C7] text-[#B45309] font-extrabold border border-amber-200'; // Amber for partial marks
+              badgeBg = 'bg-amber-500 text-white font-black shadow-xs'; // Solid Bold Amber
             }
           } else {
             scoreText = `0/${q.maxMarks || 1}`;
-            badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold border border-red-200'; // Red for unattempted
+            badgeBg = 'bg-red-500 text-white font-black shadow-xs'; // Solid Bold Red for unattempted
           }
 
           return (
