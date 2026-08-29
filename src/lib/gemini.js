@@ -6,7 +6,7 @@
  * The Gemini SDK runs ONLY on the server — never in the browser.
  */
 
-const PIPELINE_TIMEOUT_MS = 90_000; // 90 seconds
+const PIPELINE_TIMEOUT_MS = 240_000; // 4 minutes (240s) for multi-stage vision pipeline with key fallbacks
 
 /**
  * Process Question Paper & Answer Sheet via the server-side Gemini pipeline.

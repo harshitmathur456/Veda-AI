@@ -2,30 +2,27 @@ import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 
 // ─── Server-side only — Multi-key setup, never exposed to browser ────────────
-// Primary and fallback API keys for quota/rate-limit resilience
-const API_KEYS = [
-  { label: 'key-1', value: process.env.GEMINI_API_KEY_1 },
-  { label: 'key-2', value: process.env.GEMINI_API_KEY_2 },
-].filter(k => k.value); // only include keys that are actually set
+function getAIClients() {
+  const keys = [
+    { label: 'key-1', value: process.env.GEMINI_API_KEY_1 },
+    { label: 'key-2', value: process.env.GEMINI_API_KEY_2 },
+  ].filter(k => k.value && k.value.trim());
 
-// Legacy single-key fallback if _1/_2 are not configured
-if (API_KEYS.length === 0) {
-  const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-  if (legacyKey) {
-    API_KEYS.push({ label: 'key-legacy', value: legacyKey });
+  if (keys.length === 0) {
+    const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+    if (legacyKey && legacyKey.trim()) {
+      keys.push({ label: 'key-legacy', value: legacyKey.trim() });
+    }
   }
+
+  return keys.map(k => ({
+    label: k.label,
+    client: new GoogleGenAI({ apiKey: k.value.trim() }),
+  }));
 }
 
-// Create a GoogleGenAI client per key
-const AI_CLIENTS = API_KEYS.map(k => ({
-  label: k.label,
-  client: new GoogleGenAI({ apiKey: k.value }),
-}));
-
-console.log(`[API] Initialized ${AI_CLIENTS.length} Gemini API key(s): ${AI_CLIENTS.map(c => c.label).join(', ')}`);
-
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash'];
 
 /**
  * Check if an error is a rate-limit / quota-exhausted error
@@ -59,7 +56,8 @@ function isQuotaOrRateLimitError(err) {
  *  - Only surface the final error if ALL keys × models are exhausted.
  */
 async function callGeminiVision(contents, stageName = 'unknown') {
-  if (AI_CLIENTS.length === 0) {
+  const aiClients = getAIClients();
+  if (aiClients.length === 0) {
     throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1 and GEMINI_API_KEY_2 in .env.local');
   }
 
@@ -70,7 +68,7 @@ async function callGeminiVision(contents, stageName = 'unknown') {
   const modelsToTry = [MODEL_ID, ...FALLBACK_MODELS.filter(m => m !== MODEL_ID)];
   let lastError;
 
-  for (const { label: keyLabel, client: aiClient } of AI_CLIENTS) {
+  for (const { label: keyLabel, client: aiClient } of aiClients) {
     let hitQuotaOnThisKey = false;
 
     for (const modelName of modelsToTry) {
@@ -660,7 +658,8 @@ Return ONLY the JSON object. No extra text or markdown.`;
 // ─── API Route Handler ───────────────────────────────────────────────────
 
 export async function POST(request) {
-  if (AI_CLIENTS.length === 0) {
+  const clients = getAIClients();
+  if (clients.length === 0) {
     console.error('[API] No Gemini API keys configured');
     return NextResponse.json(
       { success: false, error: 'No Gemini API keys configured. Set GEMINI_API_KEY_1 and GEMINI_API_KEY_2 in .env.local' },
