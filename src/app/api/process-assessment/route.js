@@ -337,19 +337,14 @@ function detectAndTagAlternativeGroups(questions) {
 }
 
 /**
- * Resolve alternative group selections before grading.
- * Identifies which side of an OR option was attempted and marks unattempted sides for exclusion.
+/**
+ * Finalize grading results and compute deterministic summary math.
+ * Resolves OR alternative questions based on actual semantic matching and graded scores.
  */
-function resolveAlternativeGroupSelections(questions, rawAnswers) {
-  const attemptedQIds = new Set();
-  rawAnswers.forEach(ans => {
-    if (ans.questionId) attemptedQIds.add(ans.questionId);
-    if (ans.id) {
-      const qId = ans.id.replace(/^ans_/, '');
-      attemptedQIds.add(qId);
-    }
-  });
+function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
+  const gradedAnswers = gradingResult.gradedAnswers || [];
 
+  // Group questions by alternativeGroupId
   const altGroups = {};
   questions.forEach(q => {
     if (q.isAlternativeGroup && q.alternativeGroupId) {
@@ -361,80 +356,68 @@ function resolveAlternativeGroupSelections(questions, rawAnswers) {
 
   const excludedQIds = new Set();
 
+  // For each OR alternative group:
   Object.entries(altGroups).forEach(([gid, groupQuestions]) => {
-    const attemptedInGroup = groupQuestions.filter(q => attemptedQIds.has(q.id));
+    // Group subquestions by alternativeOption ('a', 'b', etc.)
+    const byOption = {};
+    groupQuestions.forEach(q => {
+      const opt = (q.alternativeOption || 'a').toLowerCase();
+      if (!byOption[opt]) byOption[opt] = [];
+      byOption[opt].push(q);
+    });
 
-    if (attemptedInGroup.length === 1) {
-      // Single attempt: student answered only one side (e.g. 18a).
-      // Keep that side active; exclude the other side(s) entirely from scoring.
-      const activeQ = attemptedInGroup[0];
-      groupQuestions.forEach(q => {
-        if (q.id !== activeQ.id) {
+    const options = Object.keys(byOption);
+    if (options.length <= 1) return;
+
+    // Calculate score / attempt for each option
+    const optionStats = options.map(opt => {
+      const optQs = byOption[opt];
+      const optQIds = new Set(optQs.map(q => q.id));
+      const optGraded = gradedAnswers.filter(g => optQIds.has(g.questionId || g.id?.replace(/^ans_/, '')));
+      
+      const totalMarks = optGraded.reduce((sum, g) => sum + (Number(g.marks) || 0), 0);
+      const hasAnyMarks = optGraded.some(g => Number(g.marks) > 0);
+      const hasAttemptedRationale = optGraded.some(g => g.rationale && !g.rationale.toLowerCase().includes('not attempted'));
+      
+      return {
+        option: opt,
+        questions: optQs,
+        graded: optGraded,
+        totalMarks,
+        isAttempted: (hasAnyMarks || hasAttemptedRationale) && optGraded.length > 0
+      };
+    });
+
+    // Find attempted options
+    const attemptedOptions = optionStats.filter(s => s.isAttempted);
+
+    let chosenOption = options[0]; // default to first option if none attempted
+    if (attemptedOptions.length === 1) {
+      chosenOption = attemptedOptions[0].option;
+    } else if (attemptedOptions.length > 1) {
+      // If student attempted both options, pick the higher scoring one
+      attemptedOptions.sort((a, b) => b.totalMarks - a.totalMarks);
+      chosenOption = attemptedOptions[0].option;
+    }
+
+    // Exclude all other options in this OR group
+    options.forEach(opt => {
+      if (opt !== chosenOption) {
+        byOption[opt].forEach(q => {
           excludedQIds.add(q.id);
-        }
-      });
-    } else if (attemptedInGroup.length > 1) {
-      // Student attempted both sides. Grade both; higher score will be kept post-grading.
-    } else {
-      // Neither side was attempted (0 attempts).
-      // Keep the first option (e.g. 18a) as active unanswered, exclude second option (18b).
-      groupQuestions.slice(1).forEach(q => {
-        excludedQIds.add(q.id);
-      });
-    }
-  });
-
-  return excludedQIds;
-}
-
-/**
- * Finalize grading results and compute deterministic summary math.
- */
-function finalizeGradingAndSummary(questions, rawAnswers, gradingResult, preExcludedQIds) {
-  const gradedAnswers = gradingResult.gradedAnswers || [];
-
-  const gradedMap = new Map();
-  gradedAnswers.forEach(g => {
-    const qId = g.questionId || g.id?.replace(/^ans_/, '');
-    gradedMap.set(qId, g);
-  });
-
-  // Handle tie-breaking / dual attempts for alternative groups
-  const altGroups = {};
-  questions.forEach(q => {
-    if (q.isAlternativeGroup && q.alternativeGroupId) {
-      const gid = q.alternativeGroupId;
-      if (!altGroups[gid]) altGroups[gid] = [];
-      altGroups[gid].push(q);
-    }
-  });
-
-  const finalExcludedQIds = new Set(preExcludedQIds);
-
-  Object.entries(altGroups).forEach(([gid, groupQuestions]) => {
-    const gradedInGroup = groupQuestions.filter(q => gradedMap.has(q.id));
-    if (gradedInGroup.length > 1) {
-      // Both sides were attempted and graded. Keep the higher scoring one.
-      gradedInGroup.sort((a, b) => {
-        const scoreA = gradedMap.get(a.id)?.marks || 0;
-        const scoreB = gradedMap.get(b.id)?.marks || 0;
-        return scoreB - scoreA;
-      });
-      // Top scorer stays active; rest excluded
-      for (let i = 1; i < gradedInGroup.length; i++) {
-        finalExcludedQIds.add(gradedInGroup[i].id);
+        });
       }
-    }
+    });
   });
 
   const processedQuestions = questions.map(q => ({
     ...q,
-    isExcludedAlternative: finalExcludedQIds.has(q.id)
+    isExcludedAlternative: excludedQIds.has(q.id)
   }));
 
   const processedAnswers = gradedAnswers.map(g => {
     const qId = g.questionId || g.id?.replace(/^ans_/, '');
-    const isExcluded = finalExcludedQIds.has(qId);
+    const isExcluded = excludedQIds.has(qId);
     return {
       ...g,
       status: isExcluded ? 'excluded_alternative' : (g.status || 'matched'),
@@ -610,38 +593,49 @@ Return ONLY the JSON array.`;
 
 async function gradeAndMap(questions, answers) {
   const payload = {
-    questions: questions.map(q => ({ id: q.id, qNo: q.qNo, subPart: q.subPart, text: q.text, maxMarks: q.maxMarks })),
-    answers: answers.map(a => ({ id: a.id, questionId: a.questionId, extractedText: a.extractedText })),
+    questions: questions.map(q => ({
+      id: q.id,
+      qNo: q.qNo,
+      subPart: q.subPart,
+      text: q.text,
+      maxMarks: q.maxMarks,
+      isAlternativeGroup: q.isAlternativeGroup,
+      alternativeGroupId: q.alternativeGroupId,
+      alternativeOption: q.alternativeOption
+    })),
+    answers: answers.map(a => ({
+      id: a.id,
+      questionId: a.questionId,
+      extractedText: a.extractedText
+    })),
   };
 
   /**
-   * The grading prompt uses a structured evaluation rubric to prevent the common
-   * failure mode where Gemini gives full marks for any written answer. The rubric
-   * forces per-question-type evaluation with explicit deduction rules.
+   * The grading prompt uses a structured evaluation rubric with semantic matching
+   * across candidate questions and explicit deduction rules for incorrect answers.
    */
   const prompt = `You are a strict academic exam evaluator and subject matter expert. Grade each student answer against its corresponding question.
+
+CRITICAL SEMANTIC MATCHING MANDATE:
+1. Student answers may have an approximate question ID or no question ID. You MUST match each student answer to the exact question whose content and subject matter it semantically addresses!
+2. FOR OR / ALTERNATIVE QUESTIONS (e.g. Q18(a) vs Q18(b), Q20(a) vs Q20(b), Q21(a) vs Q21(b)):
+   - Check what the student actually wrote against BOTH options.
+   - Do NOT assume option (a) by default! Match based strictly on the semantic content of the answer.
+   - Example 1: If the student wrote about "seed dormancy" or "pea seed / castor seed", match it to the seed question (18(a)), NOT 18(b).
+   - Example 2: If the student wrote about "follicle / primary oocyte / meiotic division", match it to 18(b).
+   - Example 3: If the student wrote about "Humoral Immune Response" or "antibodies IgG, IgM", match it to the immune response question (17(a) / 17(b)).
+   - Example 4: If the student wrote about "XO / ZW sex determination", match it to 20(a).
+   - Example 5: If the student wrote about "inverted pyramid of biomass", match it to 21(a).
 
 CRITICAL EVALUATION MANDATE:
 Evaluate the answer for factual correctness, accuracy, and completeness relative to the question asked.
 Do NOT give full marks simply because an answer was written — award marks based on how much of the expected correct content is present, accurate, and relevant.
-- A vague, incomplete, or partially incorrect answer MUST receive partial marks.
-- A wrong, incorrect, or irrelevant answer MUST receive ZERO marks (0), even if text is written.
-- Only a complete, factually accurate answer covering all key points receives full marks.
-
-IMPORTANT NOTE ON CHOICE / OR QUESTIONS:
-Alternative choice questions (OR questions) have already been resolved to required questions only.
-Evaluate ONLY the questions provided in the input payload.
-Do NOT list unattempted alternative choices as missing answers, unanswered sub-questions, or weak areas in your summary or teacher note.
-
-STRUCTURED EVALUATION RUBRIC BY QUESTION TYPE:
-1. Short-Answer / Definition Questions:
-   - Check for essential key technical terms and concepts that MUST be present.
-   - Example: For "What is data communication?", answer MUST mention: (a) exchange/transmission of data, (b) between devices, (c) via a transmission medium/network. If missing key terms, deduct marks proportionately.
-2. Process / Multi-Step / Algorithmic Questions:
-   - Check that all key steps are present, factually accurate, and in logically correct sequential order.
-   - Deduct marks for missing steps, wrong sequence, or incorrect logic.
-3. Diagram / Labeling / Technical Structure Questions:
-   - Check if key components, labels, protocols, or functional relationships are correctly named and described in text.
+- For Multiple Choice / Matching Questions:
+  * For Column Matching (e.g. Q9): Check the student's matched pairs against the actual correct options. If the student's matching is incorrect (e.g. matching wrong columns), award ZERO marks (0/1) with verdict "incorrect".
+- For Short-Answer / Definition Questions:
+  * A wrong, incorrect, or irrelevant answer MUST receive ZERO marks (0), even if text is written.
+  * A vague or incomplete answer MUST receive partial marks.
+  * Only a complete, factually accurate answer receives full marks.
 
 GRADED DATA INPUT:
 ${JSON.stringify(payload, null, 2)}
@@ -652,8 +646,8 @@ Return ONLY a valid JSON object matching this schema:
     {
       "id": "ans_q1",
       "questionId": "q1",
-      "marks": 2,
-      "maxMarks": 2,
+      "marks": 1,
+      "maxMarks": 1,
       "verdict": "correct",
       "confidence": 0.95,
       "status": "matched",
@@ -746,20 +740,16 @@ export async function POST(request) {
         const questions = detectAndTagAlternativeGroups(rawQuestions);
         send({ type: 'progress', stage: 2, text: `Extracted ${questions.length} questions & ${rawAnswers.length} student answers` });
 
-        // Stage 3: Resolve alternative choice selections & grade
+        // Stage 3: Grade all questions with semantic mapping for OR pairs
         send({ type: 'progress', stage: 3, text: 'Grading answers & generating AI feedback...' });
-        const preExcludedQIds = resolveAlternativeGroupSelections(questions, rawAnswers);
-        const activeQuestionsForGrading = questions.filter(q => !preExcludedQIds.has(q.id));
-        const activeAnswersForGrading = rawAnswers.filter(a => !preExcludedQIds.has(a.questionId));
-
-        const rawGradingResult = await gradeAndMap(activeQuestionsForGrading, activeAnswersForGrading);
+        const rawGradingResult = await gradeAndMap(questions, rawAnswers);
 
         const {
           questions: finalQuestions,
           answers: finalAnswers,
           unanswered: finalUnanswered,
           summary: finalSummary
-        } = finalizeGradingAndSummary(questions, rawAnswers, rawGradingResult, preExcludedQIds);
+        } = finalizeGradingAndSummary(questions, rawAnswers, rawGradingResult);
 
         // Merge grading verdicts with spatial bbox data from Stage 2
         // so the answer viewer can highlight the correct region on the sheet

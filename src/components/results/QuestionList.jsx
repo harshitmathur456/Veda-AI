@@ -65,22 +65,31 @@ export default function QuestionList({
           const isExpanded = expandedIds.has(q.id) || isSelected;
           const ans = answerMap.get(q.id);
 
-          // Score Pill color coding matching Screenshot 2
-          let badgeBg = 'bg-emerald-50 text-emerald-600 font-bold';
-          let scoreText = `${q.maxMarks}/${q.maxMarks}`;
+          // Score Pill color coding strictly based on numeric marks ratio:
+          // 0 marks -> RED (#FEE2E2 / #B91C1C)
+          // Partial marks -> AMBER (#FEF3C7 / #B45309)
+          // Full marks -> GREEN (#DCFCE7 / #15803D)
+          let badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold border border-red-200';
+          let scoreText = `0/${q.maxMarks || 1}`;
 
           if (q.isExcludedAlternative) {
             badgeBg = 'bg-slate-100 text-slate-500 font-bold border border-slate-200';
             scoreText = 'OR Choice (Not Selected)';
           } else if (ans) {
-            scoreText = `${ans.marks}/${ans.maxMarks}`;
-            if (ans.marks === ans.maxMarks || (ans.marks / ans.maxMarks) >= 0.8) {
-              badgeBg = 'bg-[#DCFCE7] text-[#15803D] font-extrabold'; // Green
-            } else if (ans.marks === 0) {
-              badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold'; // Red
+            const marks = Number(ans.marks ?? 0);
+            const maxMarks = Number(ans.maxMarks ?? q.maxMarks ?? 1);
+            scoreText = `${marks}/${maxMarks}`;
+
+            if (marks <= 0) {
+              badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold border border-red-200'; // Red for 0 score
+            } else if (marks >= maxMarks || (marks / maxMarks) >= 0.85) {
+              badgeBg = 'bg-[#DCFCE7] text-[#15803D] font-extrabold border border-emerald-200'; // Green for full marks
             } else {
-              badgeBg = 'bg-[#FEF3C7] text-[#B45309] font-extrabold'; // Amber
+              badgeBg = 'bg-[#FEF3C7] text-[#B45309] font-extrabold border border-amber-200'; // Amber for partial marks
             }
+          } else {
+            scoreText = `0/${q.maxMarks || 1}`;
+            badgeBg = 'bg-[#FEE2E2] text-[#B91C1C] font-extrabold border border-red-200'; // Red for unattempted
           }
 
           return (
