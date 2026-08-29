@@ -36,28 +36,27 @@ export function isLineMatch(lineText, anchorText) {
   
   if (!cleanLine || !cleanAnchor) return false;
   
-  // 1. Direct inclusion of clean anchor in clean line
-  if (cleanLine.includes(cleanAnchor)) return true;
+  // 1. Direct inclusion of clean anchor in clean line or clean line in clean anchor
+  if (cleanLine.includes(cleanAnchor) || cleanAnchor.includes(cleanLine)) return true;
   
-  // 2. Tokenize and filter out single-character tokens to prevent false matches on sub-part labels (e.g. "a", "i")
-  const lineWords = cleanLine.split(" ").filter(w => w.length > 1);
-  const anchorWords = cleanAnchor.split(" ").filter(w => w.length > 1);
+  // 2. Tokenize and filter out single/two-character noise tokens
+  const lineWords = cleanLine.split(" ").filter(w => w.length > 2);
+  const anchorWords = cleanAnchor.split(" ").filter(w => w.length > 2);
   
   if (lineWords.length === 0 || anchorWords.length === 0) {
-    // Fall back to exact string match for very short inputs
     return cleanLine === cleanAnchor;
   }
   
-  // Count how many anchor words are present in the line
+  // Count how many significant anchor words are present in the line
   let matchCount = 0;
   anchorWords.forEach(w => {
-    if (cleanLine.includes(w)) {
+    if (cleanLine.includes(w) || lineWords.some(lw => lw.includes(w) || w.includes(lw))) {
       matchCount++;
     }
   });
   
-  // Accept if at least 50% of the anchor words match
-  const requiredMatches = Math.max(1, Math.ceil(anchorWords.length * 0.5));
+  // Accept if at least 40% of significant anchor words match
+  const requiredMatches = Math.max(1, Math.ceil(anchorWords.length * 0.4));
   return matchCount >= requiredMatches;
 }
 
@@ -74,7 +73,6 @@ export function computeHighlightRegion(pageLines, startAnchor, endAnchor, nextSt
   const sortedLines = [...(pageLines || [])].sort((a, b) => a.y - b.y);
   
   if (sortedLines.length === 0) {
-    // Fallback if no page lines are available
     return { ymin: 10, xmin: 2, ymax: 90, xmax: 98 };
   }
 
@@ -83,7 +81,6 @@ export function computeHighlightRegion(pageLines, startAnchor, endAnchor, nextSt
   let startIdx = -1;
   
   if (startAnchor) {
-    // Try to find the line that contains the start anchor (or matches it best)
     for (let i = 0; i < sortedLines.length; i++) {
       if (isLineMatch(sortedLines[i].text, startAnchor)) {
         ymin = sortedLines[i].y;
@@ -93,7 +90,6 @@ export function computeHighlightRegion(pageLines, startAnchor, endAnchor, nextSt
     }
   }
 
-  // If start anchor not found in lines, default to first line's Y
   if (startIdx === -1) {
     ymin = sortedLines[0].y;
     startIdx = 0;
@@ -104,50 +100,47 @@ export function computeHighlightRegion(pageLines, startAnchor, endAnchor, nextSt
   let endIdx = -1;
 
   if (endAnchor) {
-    // Search starting from startIdx to ensure we find the end anchor after the start anchor
     for (let i = startIdx; i < sortedLines.length; i++) {
       if (isLineMatch(sortedLines[i].text, endAnchor)) {
-        ymax = sortedLines[i].y + 4; // Add typical line height offset
+        ymax = sortedLines[i].y + 5;
         endIdx = i;
         break;
       }
     }
   }
 
-  // 3. Fallback: If end anchor not found or invalid, use nextStartAnchor
+  // 3. Fallback: If end anchor not found, check for nextStartAnchor
   if (endIdx === -1 && nextStartAnchor) {
     for (let i = startIdx + 1; i < sortedLines.length; i++) {
       if (isLineMatch(sortedLines[i].text, nextStartAnchor)) {
-        ymax = Math.max(ymin + 2, sortedLines[i].y - 1); // 1% margin before next answer
-        endIdx = i;
+        const prevLine = sortedLines[i - 1];
+        ymax = Math.max(ymin + 4, (prevLine ? prevLine.y + 4 : sortedLines[i].y - 1));
+        endIdx = i - 1;
         break;
       }
     }
   }
 
-  // 4. Ultimate Fallback: if still not found, check next line or cap at bottom
+  // 4. Ultimate Fallback: if end anchor and next start anchor are both not matched,
+  // extend height to cover all remaining lines in this section (up to end of page lines)
   if (endIdx === -1) {
-    if (startIdx < sortedLines.length - 1) {
-      // If there are more lines, default to the next line's Y
-      ymax = sortedLines[startIdx + 1].y - 1;
-    } else {
-      ymax = Math.min(100, ymin + 15); // Default to a standard height band
-    }
+    const lastLineIdx = sortedLines.length - 1;
+    const maxPageY = sortedLines[lastLineIdx].y + 5;
+    ymax = Math.min(100, Math.max(ymin + 18, maxPageY));
   }
 
   // Ensure ymin < ymax
   if (ymin >= ymax) {
-    ymax = ymin + 5;
+    ymax = ymin + 8;
   }
 
-  // Keep coords within safe bounds
   ymin = Math.max(0, Math.min(ymin, 98));
-  ymax = Math.max(ymin + 2, Math.min(ymax, 100));
+  ymax = Math.max(ymin + 3, Math.min(ymax, 100));
 
   return {
     ymin,
-    xmin: 2, // Slightly offset from left edge for clean UI padding
+    xmin: 2,
     ymax,
-    xmax: 98 // Slightly offset from right edge
+    xmax: 98
   };
 }
