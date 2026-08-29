@@ -2,6 +2,20 @@
 
 import React from 'react';
 
+const QUOTA_ERROR_MESSAGE = 'Too many tokens used. Try again later.';
+
+function isQuotaExceededError(error) {
+  let errorText = '';
+
+  try {
+    errorText = typeof error === 'string' ? error : JSON.stringify(error);
+  } catch {
+    errorText = String(error || '');
+  }
+
+  return /\b429\b|quota|resource_exhausted|rate limit|too many tokens|too many requests|generativelanguage|free_tier/i.test(errorText);
+}
+
 export default function ProcessingView({
   progress = { stage: 1, text: 'Extracting...' },
   error = null,
@@ -9,19 +23,8 @@ export default function ProcessingView({
   onNewUpload = null,
 }) {
   const hasError = !!error;
-  const errStr = String(error || '').toLowerCase();
-  const isQuotaError =
-    errStr.includes('429') ||
-    errStr.includes('quota') ||
-    errStr.includes('resource_exhausted') ||
-    errStr.includes('rate limit') ||
-    errStr.includes('too many tokens') ||
-    errStr.includes('too many requests') ||
-    errStr.includes('exceeded') ||
-    errStr.includes('generativelanguage') ||
-    errStr.includes('free_tier');
-
-  const displayError = isQuotaError ? 'Too many tokens used. Try again later.' : error;
+  const isQuotaError = isQuotaExceededError(error);
+  const displayError = isQuotaError ? QUOTA_ERROR_MESSAGE : error;
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center p-6 bg-slate-100">
