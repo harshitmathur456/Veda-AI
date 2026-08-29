@@ -684,6 +684,9 @@ CRITICAL SEMANTIC MATCHING MANDATE:
    - Example 4: If the student wrote about "XO / ZW sex determination", match it to 20(a).
    - Example 5: If the student wrote about "inverted pyramid of biomass", match it to 21(a).
 
+CRITICAL ID MANDATE:
+"id" in each gradedAnswer MUST be the EXACT "id" string from the input answer object (e.g. ans_1, ans_15, ans_23). DO NOT invent or alter the input "id" string.
+
 CRITICAL EVALUATION MANDATE:
 Evaluate the answer for factual correctness, accuracy, and completeness relative to the question asked.
 Do NOT give full marks simply because an answer was written — award marks based on how much of the expected correct content is present, accurate, and relevant.
@@ -809,10 +812,35 @@ export async function POST(request) {
           summary: finalSummary
         } = finalizeGradingAndSummary(questions, rawAnswers, rawGradingResult);
 
-        // Merge grading verdicts with spatial bbox data from Stage 2
-        // so the answer viewer can highlight the correct region on the sheet
+        // Track raw answer IDs that have already been matched to avoid duplicate bbox assignment
+        const usedRawIds = new Set();
+
         const mergedAnswers = finalAnswers.map((graded) => {
-          const rawAns = rawAnswers.find(a => a.id === graded.id || normalizeId(a.questionId) === normalizeId(graded.questionId));
+          // 1. Direct ID match
+          let rawAns = rawAnswers.find(a => !usedRawIds.has(a.id) && a.id === graded.id);
+
+          // 2. Normalized Question ID match
+          if (!rawAns) {
+            rawAns = rawAnswers.find(a => !usedRawIds.has(a.id) && normalizeId(a.questionId) === normalizeId(graded.questionId));
+          }
+
+          // 3. Fallback match: same main question number (qNo)
+          if (!rawAns) {
+            const qNoMatch = (graded.questionId || '').match(/\d+/);
+            if (qNoMatch) {
+              const qNo = qNoMatch[0];
+              rawAns = rawAnswers.find(a => {
+                if (usedRawIds.has(a.id)) return false;
+                const rawNum = (a.questionId || '').match(/\d+/)?.[0];
+                return rawNum === qNo;
+              });
+            }
+          }
+
+          if (rawAns?.id) {
+            usedRawIds.add(rawAns.id);
+          }
+
           const normBbox = rawAns?.bbox ? normalizeBbox(rawAns.bbox) : null;
           return {
             ...graded,
