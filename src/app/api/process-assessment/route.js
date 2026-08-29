@@ -389,12 +389,30 @@ function normalizeCanonicalQuestions(rawQuestions) {
   });
 }
 
+function normalizeId(idStr) {
+  if (!idStr) return '';
+  let s = String(idStr).trim().toLowerCase();
+  s = s.replace(/^ans_/, '');
+  
+  const numMatch = s.match(/\d+/);
+  if (!numMatch) return s;
+  
+  const num = numMatch[0];
+  let rest = s.substring(s.indexOf(num) + num.length);
+  rest = rest.replace(/[^a-z0-9]/g, '');
+  
+  return `q${num}${rest ? `_${rest}` : ''}`;
+}
+
 /**
  * Finalize grading results and compute deterministic summary math.
  * Resolves OR alternative questions based on actual semantic matching and graded scores.
  */
 function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
-  const gradedAnswers = gradingResult.gradedAnswers || [];
+  const gradedAnswers = (gradingResult.gradedAnswers || []).map(g => ({
+    ...g,
+    questionId: normalizeId(g.questionId || g.id)
+  }));
 
   // Group questions by alternativeGroupId
   const altGroups = {};
@@ -425,7 +443,7 @@ function finalizeGradingAndSummary(questions, rawAnswers, gradingResult) {
     const optionStats = options.map(opt => {
       const optQs = byOption[opt];
       const optQIds = new Set(optQs.map(q => q.id));
-      const optGraded = gradedAnswers.filter(g => optQIds.has(g.questionId || g.id?.replace(/^ans_/, '')));
+      const optGraded = gradedAnswers.filter(g => optQIds.has(g.questionId));
       
       const totalMarks = optGraded.reduce((sum, g) => sum + (Number(g.marks) || 0), 0);
       const hasAnyMarks = optGraded.some(g => Number(g.marks) > 0);
@@ -807,7 +825,7 @@ export async function POST(request) {
         // Merge grading verdicts with spatial bbox data from Stage 2
         // so the answer viewer can highlight the correct region on the sheet
         const mergedAnswers = finalAnswers.map((graded) => {
-          const rawAns = rawAnswers.find(a => a.id === graded.id || a.questionId === graded.questionId);
+          const rawAns = rawAnswers.find(a => a.id === graded.id || normalizeId(a.questionId) === normalizeId(graded.questionId));
           return {
             ...graded,
             page: rawAns?.page || 1,
