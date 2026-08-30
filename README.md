@@ -71,7 +71,7 @@ VedaAI/
 │       ├── studentUtils.js          # Student dataset & metadata utilities
 │       └── supabase.js             # Supabase client setup
 ├── public/                          # Static assets
-├── .env.local                       # Local environment variables
+├── .env.local                       # Local environment variables (gitignored, create locally)
 ├── package.json
 └── README.md
 ```
