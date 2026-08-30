@@ -2,24 +2,18 @@ import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { computeHighlightRegion, cleanTextForMatch, isLineMatch } from '../../../lib/highlightUtils';
 
-// ─── Server-side only — Multi-key setup targeting identical model & config ─────
+// ─── Server-side only — 2-key sequential setup targeting identical model & config ─────
 function getAIClients() {
-  const preferredOrder = [5, 1, 2, 3, 4];
   const clients = [];
 
-  for (const i of preferredOrder) {
-    const val = process.env[`GEMINI_API_KEY_${i}`];
-    if (val && val.trim()) {
-      clients.push({ label: `key-${i}`, client: new GoogleGenAI({ apiKey: val.trim() }) });
-    }
+  const key1 = process.env.GEMINI_API_KEY_1;
+  if (key1 && key1.trim()) {
+    clients.push({ label: 'key-1', client: new GoogleGenAI({ apiKey: key1.trim() }) });
   }
 
-  // Last resort: legacy key
-  if (clients.length === 0) {
-    const legacyKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-    if (legacyKey && legacyKey.trim()) {
-      clients.push({ label: 'key-legacy', client: new GoogleGenAI({ apiKey: legacyKey.trim() }) });
-    }
+  const key2 = process.env.GEMINI_API_KEY_2;
+  if (key2 && key2.trim()) {
+    clients.push({ label: 'key-2', client: new GoogleGenAI({ apiKey: key2.trim() }) });
   }
 
   return clients;
@@ -27,23 +21,6 @@ function getAIClients() {
 
 const MODEL_ID = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 const QUOTA_ERROR_MESSAGE = 'Too many tokens used. Try again later.';
-
-// Timestamped tracker of keys that hit 429 quota limits (automatically resets after 60s)
-const exhaustedKeyTimestamps = new Map();
-
-function isKeyRecentlyExhausted(label) {
-  if (!exhaustedKeyTimestamps.has(label)) return false;
-  const timestamp = exhaustedKeyTimestamps.get(label);
-  if (Date.now() - timestamp > 60000) {
-    exhaustedKeyTimestamps.delete(label);
-    return false;
-  }
-  return true;
-}
-
-function markKeyAsExhausted(label) {
-  exhaustedKeyTimestamps.set(label, Date.now());
-}
 
 /**
  * Check if an error is a rate-limit / quota-exhausted error
@@ -81,16 +58,17 @@ function computeHash(data) {
 }
 
 /**
- * Call Gemini using API key rotation with identical request parameters.
+ * Call Gemini using sequential API key fallback (Key 1 -> Key 2).
  * Strategy:
- *  - Standardized target model: gemini-3.5-flash across all keys.
- *  - Identical request payload, prompt, and parameters.
- *  - If Key 1 hits a 429 rate limit, try Key 2 -> Key 3 -> Key 4.
+ *  - Standardized target model: gemini-3.5-flash across all calls.
+ *  - Always try GEMINI_API_KEY_1 first for every request.
+ *  - Only if Key 1 fails with a rate-limit/quota error (429), immediately retry using GEMINI_API_KEY_2.
+ *  - Strictly sequential, never parallel.
  */
 async function callGeminiVision(contents, stageName = 'unknown', customConfig = {}) {
   const aiClients = getAIClients();
   if (aiClients.length === 0) {
-    throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4 in .env.local');
+    throw new Error('No Gemini API keys configured. Set GEMINI_API_KEY_1 and GEMINI_API_KEY_2 in .env.local');
   }
 
   const payloadEstimate = JSON.stringify(contents).length;
@@ -98,15 +76,12 @@ async function callGeminiVision(contents, stageName = 'unknown', customConfig = 
 
   let lastError = null;
 
-  const availableClients = aiClients.filter(c => !isKeyRecentlyExhausted(c.label));
-  const clientsToTry = availableClients.length > 0 ? availableClients : aiClients;
-
   const genConfig = {
     responseMimeType: 'application/json',
     ...customConfig,
   };
 
-  for (const { label: keyLabel, client: aiClient } of clientsToTry) {
+  for (const { label: keyLabel, client: aiClient } of aiClients) {
     const startTime = Date.now();
     try {
       console.log(`[API][${stageName}] Trying ${keyLabel} with model ${MODEL_ID}`);
@@ -138,32 +113,10 @@ async function callGeminiVision(contents, stageName = 'unknown', customConfig = 
       lastError = err;
 
       if (isQuotaOrRateLimitError(err)) {
-        console.warn(`[API][${stageName}] ${keyLabel} hit rate limit — remembering as exhausted and rotating to next key`);
-        markKeyAsExhausted(keyLabel);
+        console.warn(`[API][${stageName}] ${keyLabel} hit rate limit (status ${status}) — immediately attempting fallback key`);
+      } else {
+        throw err;
       }
-    }
-  }
-
-  // Emergency sweep: If all 60s cooldown checks filtered out keys, do a final sweep over all keys ignoring cooldowns
-  console.warn(`[API][${stageName}] All un-flagged keys exhausted, performing final sweep over key pool...`);
-  for (const { label: keyLabel, client: aiClient } of aiClients) {
-    try {
-      const response = await aiClient.models.generateContent({
-        model: MODEL_ID,
-        contents,
-        config: genConfig,
-      });
-
-      if (response?.usageMetadata) {
-        const { promptTokenCount, candidatesTokenCount, totalTokenCount } = response.usageMetadata;
-        console.log(`[TokenTracker][${stageName}][Sweep] Usage: Prompt=${promptTokenCount || 0} | Output=${candidatesTokenCount || 0} | Total=${totalTokenCount || 0}`);
-      }
-
-      if (response && response.text) {
-        return response;
-      }
-    } catch (err) {
-      lastError = err;
     }
   }
 
