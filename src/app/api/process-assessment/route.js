@@ -71,6 +71,10 @@ import crypto from 'crypto';
 // In-memory caches for Stage 1 and Stage 2 results keyed by SHA-256 hash
 const stage1Cache = new Map();
 const stage2Cache = new Map();
+// Bump this whenever the Stage 1 extraction contract changes.  The Stage 2
+// cache depends on the extracted question IDs, so it is deliberately derived
+// from the versioned Stage 1 hash below as well.
+const QUESTION_EXTRACTION_SCHEMA_VERSION = 'subparts-v1';
 
 function computeHash(data) {
   return crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
@@ -667,7 +671,26 @@ function buildQuestionExtractionPrompt(pageNumber = null) {
 
   return `You are an expert exam paper digitizer. ${pageScope}
 
-Extract EVERY question and sub-question from the paper.
+Extract EVERY question and sub-question from the paper. The returned JSON array
+is the question list: one array object represents exactly one independently
+answerable prompt, never a block containing multiple prompts.
+
+CRITICAL SUB-PART SPLITTING:
+When one printed question contains sequential labelled sub-parts, extract EACH
+labelled sub-part as a separate object in the JSON array. Never merge them into
+one object, even if they appear in one sentence or short block. This includes
+(i)/(ii)/(iii), Case I/Case II, and any comparable sequential labels.
+- Preserve the complete label path in "subPart", including its parent option.
+  For example, use "a.(i)" and "a.(ii)" (not merely "(i)" and "(ii)") for
+  question 18 option a; use "a.(Case I)" and "a.(Case II)" for question 20.
+- Every split entry keeps the same parent "qNo" and, where applicable, the
+  same OR metadata as its siblings. Only its id, subPart, text, and individual
+  mark allocation differ.
+- "text" for a split entry contains only that sub-part's prompt, including the
+  label needed to understand it; do not repeat or combine another sub-part.
+- A question with two labelled sub-parts MUST therefore produce two JSON array
+  objects. For example Q18(a)(i)/(ii), Q20(a) Case I/Case II, and
+  Q21(a)(i)/(ii) each produce two independent entries.
 
 CRITICAL OR / ALTERNATIVE QUESTION IDENTIFICATION:
 Look carefully for the word "OR" or "Or" appearing as a standalone label separating two sub-options under the same question number.
@@ -679,11 +702,22 @@ When an "OR" structure is present between sub-parts under the same main question
 Return ONLY a valid JSON array. Each element must have this exact schema:
 [
   {
-    "id": "q18_a",
+    "id": "q18_a_i",
     "qNo": "18",
-    "subPart": "a.",
-    "text": "Full exact question text as printed on the paper",
-    "maxMarks": 5,
+    "subPart": "a.(i)",
+    "text": "(i) How does a farmer use dormancy of seed to his advantage?",
+    "maxMarks": 2,
+    "page": 1,
+    "isAlternativeGroup": true,
+    "alternativeGroupId": "18",
+    "alternativeOption": "a"
+  },
+  {
+    "id": "q18_a_ii",
+    "qNo": "18",
+    "subPart": "a.(ii)",
+    "text": "(ii) Differentiate between pea seed and castor seed.",
+    "maxMarks": 3,
     "page": 1,
     "isAlternativeGroup": true,
     "alternativeGroupId": "18",
@@ -692,11 +726,11 @@ Return ONLY a valid JSON array. Each element must have this exact schema:
 ]
 
 Rules:
-- "id" must be unique: "q1", "q2", "q3"... For sub-parts: "q11_a", "q11_b", "q18_a", "q18_b".
+- "id" must be unique: "q1", "q2", "q3"... For nested sub-parts use the full path: "q18_a_i", "q18_a_ii", "q20_a_case_i", "q20_a_case_ii".
 - "qNo" is the printed question number as a string (e.g. "18").
-- "subPart" is null if no sub-part, otherwise "a.", "b.", etc.
-- "text" must be the COMPLETE question text exactly as printed. Do NOT truncate.
-- "maxMarks" from the paper if visible. If not visible, estimate.
+- "subPart" is null if no sub-part; otherwise it is the COMPLETE printed label path, e.g. "a.", "a.(i)", "a.(Case I)".
+- "text" must be the complete text of THIS ONE independent question as printed. Do NOT truncate or include a neighbouring labelled sub-part.
+- "maxMarks" is the mark allocation for THIS entry, not the combined total for sibling sub-parts. Use the paper's allocation or a reasonable split if only a combined total is visible.
 - "page" is which image (1-indexed) the question appears on.
 - "isAlternativeGroup": true if this question is part of an OR choice pair under the same main question number, false otherwise.
 - "alternativeGroupId": string matching the parent question number (e.g. "18") if part of an OR choice pair, otherwise null.
@@ -973,7 +1007,10 @@ export async function POST(request) {
 
       try {
         // Compute SHA-256 hashes for caching Stage 1 and Stage 2
-        const qpHash = computeHash(qpText ? qpText : qpImages);
+        const qpHash = computeHash({
+          source: qpText ? qpText : qpImages,
+          questionExtractionSchemaVersion: QUESTION_EXTRACTION_SCHEMA_VERSION,
+        });
         const asHash = computeHash({ asImages, qpHash });
 
         // Stage 1: Extract questions (from cache if available)
